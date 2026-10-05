@@ -4,14 +4,15 @@
        one line per word: address, word, decoded fields (for cross-checking
        the decoder against capstone; see phase2/crosscheck_decoder.py)
    superspider disasm IMAGE BASE [FROM [TO]]
-   superspider spider IMAGE BASE [--module] [--entry ADDR]... [-o OUT.json]
+   superspider spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [-o OUT.json]
        S0 recursive descent.
    superspider s1 IMAGE BASE [same options]
        S1: return-address and stack abstract interpretation.
    superspider s1b IMAGE BASE [same options]
        S1 plus address-taken entry points (phase 3b) and, with --module,
-       the module's *command table entries. Entry points: BASE for an absolute image, the
-       module header's code entries with --module, plus any --entry. *)
+       the module's *command table entries. Entry points: BASE for an absolute image (or
+       its execution address, --exec, when that is not its load address), the module
+       header's code entries with --module, plus any --entry. *)
 
 open Superspider
 
@@ -72,9 +73,11 @@ let () =
     done
   | ("spider" | "s1" | "s1b") as stage :: path :: base :: rest ->
     let img = Image.load path (int_of_hex base) in
+    let exec = ref img.base in
     let rec opts entries out modl = function
       | "--module" :: r -> opts entries out true r
       | "--entry" :: a :: r -> opts (int_of_hex a :: entries) out modl r
+      | "--exec" :: a :: r -> exec := int_of_hex a; opts entries out modl r
       | "-o" :: f :: r -> opts entries (Some f) modl r
       | [] -> List.rev entries, out, modl
       | x :: _ -> prerr_endline ("unknown option " ^ x); usage () in
@@ -83,7 +86,7 @@ let () =
       if modl then
         List.map snd (Image.module_header_entries img)
         @ (if stage = "s1b" then List.map snd (Image.module_command_entries img) else [])
-      else [ img.base ] in
+      else [ !exec ] in
     let entries = given @ extra in
     let oc = match out with Some f -> open_out f | None -> stdout in
     if stage = "spider" then begin

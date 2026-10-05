@@ -6,9 +6,10 @@ NOTES.md for the idea and PLAN.md for the evaluation plan and status.
 
   dune build && dune test
   dune exec superspider -- disasm IMAGE BASE [FROM [TO]]
-  dune exec superspider -- spider IMAGE BASE [--module] [--entry ADDR]... [-o OUT.json]   (S0)
-  dune exec superspider -- s1 IMAGE BASE [--module] [--entry ADDR]... [-o OUT.json]       (S1)
-  dune exec superspider -- s1b IMAGE BASE [--module] [--entry ADDR]... [-o OUT.json]      (S1 + address-taken + relocation + tables: the full pipeline)
+  dune exec superspider -- spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [-o OUT.json]   (S0)
+  dune exec superspider -- s1 IMAGE BASE [same options]       (S1)
+  dune exec superspider -- s1b IMAGE BASE [same options]      (S1 + address-taken + relocation + tables: the full pipeline)
+      --exec: an absolute file's execution address, when it isn't BASE (its load address)
       SS_DEBUG=<function hex> / SS_DEBUG_ADDR=<addr hex> / SS_TRACE=1 for tracing
 
 src/      arm2.ml decoder, image.ml images + module headers, spider.ml (S0),
@@ -24,3 +25,4 @@ phase4/   bounded indirect jumps (PHASE4.md)
 phase5/   memory-carried targets, SMC, conflicts (PHASE5.md)
 phase6/   end-to-end: recompilations rebuilt from SuperSpider (PHASE6.md, build.sh)
 twinworld/ a third game analysed cold, and the generalisations it needed (TWINWORLD.md)
+gyrinus/   a fourth: Gyrinus II, program and 17 module images (GYRINUS.md)
