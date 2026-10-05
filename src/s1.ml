@@ -234,10 +234,13 @@ let equal_state a b =
 
 type exit_ = { pc : v; st : state; at : int }        (* at: address of the exiting instruction *)
 
-type summary = exit_ list                           (* joined per distinct pc value *)
+type summary = exit_ list                           (* joined per pc value and flag knowledge *)
 
+(* Exits are joined per target and flag knowledge: the paths of a
+   conditional default (teq r0,#0 ; addeq r0,pc,#k ; mov pc,lr) return
+   different values, which a join would lose. *)
 let add_exit (s : summary) e =
-  match List.partition (fun x -> x.pc = e.pc) s with
+  match List.partition (fun x -> x.pc = e.pc && x.st.fk = e.st.fk) s with
   | [ x ], rest -> { x with st = join_state x.st e.st } :: rest
   | _, rest -> e :: rest
 
@@ -291,6 +294,7 @@ type t = {
   inlined : (int, unit) Hashtbl.t;                  (* call sites analysed by inlining the callee *)
   field_vals : (int, IS.t) Hashtbl.t;               (* field offset -> image addresses stored there *)
   field_users : (int, (int, unit) Hashtbl.t) Hashtbl.t;   (* field offset -> functions jumping through it *)
+  sym_stores : (int, (int * v) list) Hashtbl.t;    (* function -> (variable, value relative to its entry) *)
 }
 
 (* A copy loop: len bytes from src (inside the image) to dst, found at the
@@ -324,6 +328,7 @@ let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   problems = Hashtbl.create 64; funcs = Hashtbl.create 256; fresh = Stack.create (); work = Queue.create ();
   analysed = Hashtbl.create 256; in_progress = Hashtbl.create 64;
   queued = Hashtbl.create 256; field_vals = Hashtbl.create 16; field_users = Hashtbl.create 16;
+  sym_stores = Hashtbl.create 16;
 }
 
 (* An address in the destination of a copy loop (and not in the image)
@@ -415,8 +420,10 @@ let shift_v sh n v =
     else mk_range (lo lsl n) (hi lsl n) (step lsl n)
   | Range (lo, hi, step), Arm2.LSR when n > 0 ->
     mk_range (lo lsr n) (hi lsr n) (if step land ((1 lsl n) - 1) = 0 then step lsr n else 1)
-  | Top, Arm2.LSL when n > 0 ->
-    (* an unknown value shifted left: some multiple of 2^n *)
+  | (Top | Sym _), Arm2.LSL when n > 0 ->
+    (* an unknown value shifted left (a symbolic one, e.g. an index read
+       from a field of the workspace, is just as unknown): some multiple
+       of 2^n *)
     mk_range 0 (m32 land lnot ((1 lsl n) - 1)) (1 lsl n)
   | _ -> Top
 
@@ -503,10 +510,33 @@ let image_word ?(record = true) t a ~byte =
       end
   end
 
-(* A store of v to address value av (not through SP): a constant address in
-   the image is a variable (and, if it holds code, self-modification). *)
-let note_store t site av v ~byte =
+(* The initial image value of variable w, if it was written at run time
+   (only stored values are its known values, see next_var_known) and looks
+   like a code address: used only where the variable is a jump target, e.g.
+   a dispatch table that start-up code may overwrite with other routines. *)
+let initial_target t w =
+  let w = w land lnot 3 in
+  if not (Image.inside t.img w) || not (Hashtbl.mem t.var_known w) then []
+  else
+    let c = Image.word t.img w land addr_mask in
+    if c land 3 = 0 && Image.inside t.img c && Image.word t.img c >= 0x10000
+       && (let i = Image.decode t.img c in Arm2.plausible i && i.cond <> Arm2.NV)
+    then [ c ] else []
+
+(* A store of v to address value av (not through SP), in function f: a
+   constant address in the image is a variable (and, if it holds code,
+   self-modification). A value relative to f's entry (a setter storing its
+   argument: str r0,[pc,#k]) is kept with f, and each call site stores
+   that value substituted with its own state (see apply_summary). *)
+let note_store t ~f site av v ~byte =
   match av with
+  | Consts s when IS.cardinal s = 1 && not byte
+                  && (match v with Sym (b, _) -> b <> Reg0 13 | _ -> false)
+                  && Image.inside t.img (IS.choose s land lnot 3) ->
+    let w = IS.choose s land lnot 3 in
+    Hashtbl.replace t.code_writes w (site :: Option.value (Hashtbl.find_opt t.code_writes w) ~default:[]);
+    let l = Option.value (Hashtbl.find_opt t.sym_stores f) ~default:[] in
+    if not (List.mem (w, v) l) then Hashtbl.replace t.sym_stores f ((w, v) :: l)
   | Consts s when IS.cardinal s = 1 ->
     (* not mapped back through copies: a store into a copy changes the
        copy, not the image (the copy loop itself writes all of it) *)
@@ -741,8 +771,16 @@ and update t g =
   if Sys.getenv_opt "SS_TRACE" <> None then Printf.eprintf "start &%x\n%!" g;
   Hashtbl.replace t.analysed g ();
   Hashtbl.replace t.in_progress g ();
+  (* any analysis answers a pending request: a function first analysed
+     depth-first from a call, while still waiting on the fresh stack, must
+     not stay marked queued, or later requests to re-analyse it are lost *)
+  Hashtbl.remove t.queued g;
+  let nsym () = List.length (Option.value (Hashtbl.find_opt t.sym_stores g) ~default:[]) in
+  let sym_before = nsym () in
   let s = analyse_function t g in
   Hashtbl.remove t.in_progress g;
+  if nsym () <> sym_before then          (* new symbolic stores: the call sites substitute them *)
+    Hashtbl.iter (fun c () -> if not (Hashtbl.mem t.in_progress c) then enqueue t c) (Hashtbl.find t.callers g);
   let old = Hashtbl.find t.summaries g in
   if Sys.getenv_opt "SS_TRACE" <> None then
     Printf.eprintf "&%x exits %d -> %d%s\n%!" g (List.length old) (List.length s)
@@ -784,6 +822,8 @@ and analyse_function t f =
     add_func t target;
     Hashtbl.replace (Hashtbl.find t.callers target) f ();
     ensure_analysed t target;
+    List.iter (fun (w, v) -> note_store t ~f a (const w) (subst t st v) ~byte:false)
+      (Option.value (Hashtbl.find_opt t.sym_stores target) ~default:[]);
     List.iter (fun (e : exit_) ->
         if e.st.regs.(13) = Top then Hashtbl.replace t.balanced a ();
         let ret = subst t st e.pc in
@@ -880,7 +920,7 @@ and analyse_function t f =
          else
            (* an entry written at run time holds the values stored to it *)
            let entry_vals = match Hashtbl.find_opt t.var_known e with
-             | Some (Consts s) -> IS.elements s
+             | Some (Consts s) -> initial_target t e @ IS.elements s
              | Some _ -> []
              | None -> if Hashtbl.mem t.vars e then [] else [ Image.word img e ] in
            let valid = List.filter_map (fun w ->
@@ -917,30 +957,67 @@ and analyse_function t f =
           IS.iter (fun c -> add_set t.ret_sites a (IS.singleton (c land addr_mask));
                     goto a (c land addr_mask) st') rs
         | _ ->
-          match field_jump a with
-          | Some (k, c) ->
+          (* functions that jumped through field k are re-analysed when
+             the values stored there grow *)
+          let use k =
             let us = match Hashtbl.find_opt t.field_users k with
               | Some us -> us
               | None -> let us = Hashtbl.create 4 in Hashtbl.replace t.field_users k us; us in
-            Hashtbl.replace us f ();
-            let ok x =
-              Image.inside img x && x land 3 = 0 && not (Hashtbl.mem t.data x)
-              && (let i = Image.decode img x in Arm2.plausible i && i.cond <> Arm2.NV)
-              && Image.word img x >= 0x10000 in
-            let targets = IS.filter ok (IS.map (fun v -> map_addr t ((v + c) land addr_mask))
-                                          (Option.value (Hashtbl.find_opt t.field_vals k) ~default:IS.empty)) in
-            if IS.is_empty targets then begin
-              Hashtbl.replace t.unresolved a "unknown target"; Hashtbl.replace t.fn_unresolved f ()
-            end else begin
-              Hashtbl.remove t.unresolved a;
-              Hashtbl.replace t.tables a (Printf.sprintf "field +&%x" k, IS.cardinal targets);
-              jump a st (Consts targets)
-            end
-          | None -> Hashtbl.replace t.unresolved a "unknown target"; Hashtbl.replace t.fn_unresolved f ())
+            Hashtbl.replace us f () in
+          let vals k = Option.value (Hashtbl.find_opt t.field_vals k) ~default:IS.empty in
+          let field_targets k c =
+            use k;
+            IS.filter code_target (IS.map (fun v -> map_addr t ((v + c) land addr_mask)) (vals k)) in
+          let how, targets = match field_jump a with
+            | Some (`Object (k, None)) ->
+              (* a table inside the objects stored at field k *)
+              use k;
+              (Printf.sprintf "object at field +&%x" k,
+               IS.fold (fun o acc -> IS.union (object_code_words o) acc) (vals k) IS.empty)
+            | Some (`Object (k, Some j)) ->
+              (* word j of the objects stored at field k; failing that, any
+                 value stored at field offset j *)
+              use k;
+              let objs = IS.filter (fun o -> Image.inside img (o + j)) (vals k) in
+              let ts = IS.filter code_target (IS.map (fun o -> Image.word img (o + j)) objs) in
+              if IS.is_empty ts then (Printf.sprintf "field +&%x" j, field_targets j 0)
+              else (Printf.sprintf "object at field +&%x, +&%x" k j, ts)
+            | Some (`Field (k, c)) -> (Printf.sprintf "field +&%x" k, field_targets k c)
+            | None -> ("", IS.empty) in
+          if IS.is_empty targets then begin
+            Hashtbl.replace t.unresolved a "unknown target"; Hashtbl.replace t.fn_unresolved f ()
+          end else begin
+            Hashtbl.remove t.unresolved a;
+            Hashtbl.replace t.tables a (how, IS.cardinal targets);
+            jump a st (Consts targets)
+          end)
+  (* The code addresses among an object's words: up to max_object words
+     from its start, stopping at a word the analysis found to be code. A
+     word that holds a code address must be inside the image, aligned, at
+     plausible code that isn't data and isn't a word below &10000. *)
+  and code_target x =
+    x land 3 = 0 && Image.inside img x && not (Hashtbl.mem t.data x) && Image.word img x >= 0x10000
+    && (let i = Image.decode img x in Arm2.plausible i && i.cond <> Arm2.NV)
+  and object_code_words o =
+    let max_object = 64 in
+    let rec go k acc =
+      let w = o + 4 * k in
+      if k >= max_object || not (Image.inside img w) || Hashtbl.mem t.code w then acc
+      else
+        let x = Image.word img w in
+        go (k + 1) (if code_target x then IS.add x acc else acc) in
+    go 0 IS.empty
   (* The jump at a, with an unknown target: is it through a value loaded
      from a field (ldr pc,[rB,#k]; or add/mov pc,rN[,#c] where the
      straight-line code before it set rN with ldr rN,[rB,#k])? Then
-     (k, c): its targets are the addresses stored at offset k, plus c. *)
+     (k, c): its targets are the addresses stored at offset k, plus c.
+     Or through an object loaded from a field (rO set with ldr rO,[rB,#k]
+     in the straight-line code before): ldr pc,[rO,rI,lsl #2], a table in
+     the object, gives `Object (k, None) - its targets are the code
+     addresses stored in the objects that are stored at offset k
+     (object_code_words), e.g. a menu screen's handler list indexed by the
+     item chosen; ldr pc,[rO,#j] gives `Object (k, Some j), the word at
+     offset j of each such object. *)
   and field_jump a =
     let fld (i : Arm2.t) = match i.kind with
       | Arm2.Mem { load = true; byte = false; pre = true; up = true; rn; off = Arm2.Off_imm k; _ }
@@ -957,12 +1034,20 @@ and analyse_function t f =
           if i.cond <> Arm2.AL then None
           else Option.map (fun k -> (k, c)) (fld i)
         | _ -> back r c (x - 4) (n - 1) in
+    let field kc = Option.map (fun (k, c) -> `Field (k, c)) kc in
     let i = Image.decode img a in
     match i.kind with
-    | Arm2.Mem _ when fld i <> None -> Option.map (fun k -> (k, 0)) (fld i)
-    | Arm2.Dp { op = Arm2.ADD; rd = 15; rn; op2 = Arm2.Imm (c, _); _ } when rn <> 15 -> back rn c (a - 4) 16
+    | Arm2.Mem { load = true; byte = false; pre = true; up = true; rn;
+                 off = Arm2.Off_reg (rm, Arm2.LSL, 2); _ } when rn <> 13 && rn <> 15 && rm <> rn ->
+      Option.map (fun (k, _) -> `Object (k, None)) (back rn 0 (a - 4) 16)
+    | Arm2.Mem { rn; off = Arm2.Off_imm j; _ } when fld i <> None ->
+      (* a field of an object itself loaded from a field, or any field *)
+      (match back rn 0 (a - 4) 16 with
+       | Some (k, _) when Hashtbl.mem t.field_vals k -> Some (`Object (k, Some j))
+       | _ -> field (Option.map (fun k -> (k, 0)) (fld i)))
+    | Arm2.Dp { op = Arm2.ADD; rd = 15; rn; op2 = Arm2.Imm (c, _); _ } when rn <> 15 -> field (back rn c (a - 4) 16)
     | Arm2.Dp { op = Arm2.MOV; rd = 15; op2 = Arm2.Reg (Arm2.Shift_imm (rm, Arm2.LSL, 0)); _ } when rm <> 15 ->
-      back rm 0 (a - 4) 16
+      field (back rm 0 (a - 4) 16)
     | _ -> None
   in
   (* With SP unknown: the single saved return value in the frame, if any. *)
@@ -1081,10 +1166,19 @@ and analyse_function t f =
                note_candidates t st.regs.(r) a (Printf.sprintf "swi &%x r%d" n r)
              done);
           goto a next (clobber st [ 0; 1; 2; 3 ])
-        | Arm2.Dp { op; rd; rn; op2; _ } ->
+        | Arm2.Dp { op; rd; rn; op2; s = setf; _ } ->
           if Arm2.is_test op then goto a next st
           else
             let v = eval_dp st i op rn op2 in
+            (* movs/mvns of an immediate sets Z from a constant: after
+               moveqs r3,#0 the path that ran it still knows EQ. (Not any
+               constant result: a value loaded from the image may be a
+               variable written in ways the analysis doesn't see, and
+               pruning a path on it loses code.) *)
+            let st = match op, op2 with
+              | (Arm2.MOV | Arm2.MVN), Arm2.Imm _ when setf && rd <> 15 ->
+                (match single v with Some c -> { st with fk = fk_of Arm2.EQ (c = 0) } | None -> st)
+              | _ -> st in
             if rd = 15 then begin
               match op, rn, op2 with
               | Arm2.ADD, 15, Arm2.Reg _ when v = Top || unbounded v ->
@@ -1116,12 +1210,19 @@ and analyse_function t f =
           let st1 = if wb || not pre then set_reg st rn moved else st in
           if load then begin
             let v = load_word t st av ~byte in
+            (* a jump through a variable may also go to its initial value *)
+            let v = match v, av with
+              | Consts s, Consts w when rd = 15 && IS.cardinal w = 1 && not byte ->
+                (match initial_target t (IS.choose w) with
+                 | [ c ] -> Consts (IS.add c s)
+                 | _ -> v)
+              | _ -> v in
             if rd = 15 then (if rn = 13 then pop_pc a st1 v else jump a st1 v)
             else goto a next (set_reg st1 rd v)
           end else
             let v = if rd = 15 then const (a + 12) else st.regs.(rd) in
             if rn <> 13 && rd <> 15 && not byte then note_candidates t v a "stored";
-            if rn <> 13 then note_store t a av v ~byte;
+            if rn <> 13 then note_store t ~f a av v ~byte;
             (match off with
              | Arm2.Off_imm n when rn <> 13 && rn <> 15 && pre && up && not byte -> record_field t n v
              | _ -> ());
@@ -1148,7 +1249,7 @@ and analyse_function t f =
             List.iteri (fun k r ->
                 let v = if r = 15 then const (a + 12) else st.regs.(r) in
                 if rn <> 13 && r <> 15 then note_candidates t v a "stored";
-                if rn <> 13 then note_store t a (addr_of k) v ~byte:false;
+                if rn <> 13 then note_store t ~f a (addr_of k) v ~byte:false;
                 st1 := store !st1 ~base_reg:rn (addr_of k) v) rl;
             goto a next (if wb then set_reg !st1 rn final else !st1)
           end
@@ -1196,9 +1297,30 @@ let run t entries =
    them (seen in Galactic Dan: plot-routine screen pointers turned into
    addresses inside the image). Unsound for a variable read before any
    store; recorded as such in PHASE5.md. *)
+(* A symbolic store in a function nobody calls (an entry point, or code
+   reached some other way) stores something unknown. Zero among other
+   values is dropped: a setter called with 0 for "none" or "the default"
+   (teq r0,#0 ; addeq r0,pc,#k ; str r0,[pc,#v]) stores 0 only on the path
+   the test rules out, and a pointer variable's 0 means "not set". *)
 let next_var_known t =
   let h = Hashtbl.create 64 in
-  Hashtbl.iter (fun w v -> Hashtbl.replace h w (match v with Consts _ -> v | _ -> Top)) t.var_stores;
+  Hashtbl.iter (fun f l ->
+      match Hashtbl.find_opt t.callers f with
+      | Some cs when Hashtbl.length cs > 0 -> ()
+      | _ -> List.iter (fun (w, _) -> Hashtbl.replace t.var_stores w Top) l) t.sym_stores;
+  (match Sys.getenv_opt "SS_DEBUG_VAR" with
+   | Some x -> let w = int_of_string ("0x" ^ x) in
+     Printf.eprintf "var &%x: stored %s; symbolic in %s\n%!" w
+       (match Hashtbl.find_opt t.var_stores w with Some v -> string_of_v v | None -> "-")
+       (String.concat " " (Hashtbl.fold (fun f l acc ->
+            List.fold_left (fun acc (w', v) -> if w' = w then Printf.sprintf "&%x:%s(%d callers)" f (string_of_v v)
+                (match Hashtbl.find_opt t.callers f with Some c -> Hashtbl.length c | None -> 0) :: acc else acc) acc l)
+            t.sym_stores []))
+   | None -> ());
+  Hashtbl.iter (fun w v -> Hashtbl.replace h w (match v with
+      | Consts s when IS.cardinal s > 1 && IS.mem 0 s -> Consts (IS.remove 0 s)
+      | Consts _ -> v
+      | _ -> Top)) t.var_stores;
   h
 
 let same_vars a b =

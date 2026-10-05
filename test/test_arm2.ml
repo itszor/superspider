@@ -236,6 +236,49 @@ let test_variable_jump () =
   check_bool "variable is not code" (not (Hashtbl.mem t.code 0x801c));
   check_bool "&800c not code" (not (Hashtbl.mem t.code 0x800c))
 
+let image_of words =
+  let b = Bytes.create (4 * List.length words) in
+  List.iteri (fun k w -> Bytes.set_int32_le b (4 * k) (Int32.of_int w)) words;
+  { Image.data = Bytes.to_string b; base = 0x8000; size = Bytes.length b }
+
+(* A variable set through a setter routine (its argument, substituted at
+   the call site), then jumped through:
+     8000  add r0, pc, #&14       handler &801c
+     8004  bl &8014
+     8008  ldr pc, [pc, #&18]     jump through the variable at &8028
+     800c  swi OS_Exit            (not reached)
+     8010  swi OS_Exit            (not reached)
+     8014  str r0, [pc, #&c]      setter: variable := r0
+     8018  mov pc, lr
+     801c  mov r0, #1             handler
+     8020  mov r1, #2
+     8024  swi OS_Exit
+     8028  &00000000              variable *)
+let test_setter_jump () =
+  let img = image_of [ 0xE28F0014; 0xEB000002; 0xE59FF018; 0xEF000011; 0xEF000011;
+                       0xE58F000C; 0xE1A0F00E; 0xE3A00001; 0xE3A01002; 0xEF000011; 0 ] in
+  let t = S1.spider img [ 0x8000 ] in
+  Alcotest.check ints "jump through the variable" [ 0x801c ]
+    (S1.IS.elements (Hashtbl.find t.const_jumps 0x8008));
+  check_bool "handler is code" (Hashtbl.mem t.code 0x801c)
+
+(* A jump through a table inside an object stored at a field:
+     8000  add r0, pc, #&14       the object at &801c
+     8004  str r0, [r12, #&58]    stored at field &58
+     8008  ldr r1, [r12, #&58]
+     800c  ldr r2, [r12, #&5c]    an unknown index
+     8010  ldr pc, [r1, r2, lsl #2]
+     8014  mov r0, #1             handler
+     8018  swi OS_Exit
+     801c  &00000005, &00008014   the object: a count, then the handler *)
+let test_object_jump () =
+  let img = image_of [ 0xE28F0014; 0xE58C0058; 0xE59C1058; 0xE59C205C; 0xE791F102;
+                       0xE3A00001; 0xEF000011; 0x5; 0x8014 ] in
+  let t = S1.spider img [ 0x8000 ] in
+  Alcotest.check ints "jump into the object's table" [ 0x8014 ]
+    (S1.IS.elements (Hashtbl.find t.const_jumps 0x8010));
+  check_bool "object is not code" (not (Hashtbl.mem t.code 0x801c))
+
 let () =
   Alcotest.run "superspider"
     [ ("decode", [ Alcotest.test_case "text" `Quick test_text;
@@ -247,4 +290,6 @@ let () =
                    Alcotest.test_case "module command table" `Quick test_command_table;
                    Alcotest.test_case "s1 relocation" `Quick test_relocation;
                    Alcotest.test_case "s1 bounded tables" `Quick test_tables;
-                   Alcotest.test_case "s1 jump through a variable" `Quick test_variable_jump ]) ]
+                   Alcotest.test_case "s1 jump through a variable" `Quick test_variable_jump;
+                   Alcotest.test_case "s1 variable set by a setter" `Quick test_setter_jump;
+                   Alcotest.test_case "s1 table in an object" `Quick test_object_jump ]) ]
