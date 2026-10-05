@@ -1,0 +1,12 @@
+# dune
+_build/
+# Python
+__pycache__/
+*.pyc
+# regenerable outputs: coverage builds and runs (phase0/run_cov.py,
+# phase6/build.sh), analysis outputs (phase2/out: eval scripts)
+phase0/build/
+phase0/runs/
+phase0/runs6/
+phase6/build/
+phase2/out/

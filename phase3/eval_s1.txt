@@ -1,0 +1,24 @@
+== galdan: code 7690 words, 107 functions, 615 data words, 13 unresolved, 4 assumed returns, 14 balance assumptions, 0 problems
+   exit shapes: {'LR': 107, '(no exit)': 0}
+   derived returns not at +4: {}
+   observed returns with call site in S1 code: 173, landing in S1 code: 173
+== lemprog: code 8553 words, 126 functions, 623 data words, 6 unresolved, 1 assumed returns, 0 balance assumptions, 0 problems
+   exit shapes: {'caller-slot+0': 76, 'caller-slot+52': 15, 'LR+4': 14, 'LR': 11, 'caller-slot+4': 3, 'caller-slot+56': 3, 'caller-slot+12': 2, '(no exit)': 2, 'caller-slot+8': 1}
+   derived returns not at +4: {'+8': 348, 'elsewhere': 151, '+60': 1, '+52': 1, '+12': 5}
+   observed returns with call site in S1 code: 507, landing in S1 code: 507
+== lemboot: code 9 words, 1 functions, 2 data words, 0 unresolved, 0 assumed returns, 0 balance assumptions, 1 problems
+   exit shapes: {'(no exit)': 1}
+   derived returns not at +4: {}
+   observed returns with call site in S1 code: 0, landing in S1 code: 0
+== musmod: code 195 words, 13 functions, 5 data words, 1 unresolved, 0 assumed returns, 0 balance assumptions, 0 problems
+   exit shapes: {'LR': 13, '(no exit)': 0}
+   derived returns not at +4: {}
+   observed returns with call site in S1 code: 8, landing in S1 code: 8
+
+== musmod with hand seeds: code 1906 words, 78 functions, 49 data words, 3 unresolved, 1 assumed returns, 1 balance assumptions, 0 problems
+   exit shapes: {'LR': 68, 'caller-slot+0': 9, 'r12+0': 2, 'caller-slot+108': 1, 'caller-slot+28': 1, 'caller-slot+24': 1, '(no exit)': 0}
+   derived returns not at +4: {'+12': 1, 'elsewhere': 3}
+   observed returns with call site in S1 code: 107, landing in S1 code: 107
+   &2f1c derived as a return target at: [('0x1802f18', ['0x1802f1c'])]
+   summary of 1802ed0: ['r12+0 sp=SP0-8', 'LR sp=SP0+0']
+   summary of 1802f60: ['LR sp=SP0+0']

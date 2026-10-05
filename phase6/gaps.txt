@@ -1,0 +1,12 @@
+== phase0/runs6
+  gd-headless    interpreted 0          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   0   
+  gd-play0       interpreted 9          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    9 smc-form   0   
+  gd-play1       interpreted 9          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    9 smc-form   0   
+  gd-play2       interpreted 9          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    9 smc-form   0   
+  lem-boot       interpreted 0          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   0   
+  lem-level00    interpreted 9220       untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   2   
+  lem-level05    interpreted 1400       untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   2   
+  lem-level10    interpreted 2080       untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   2   
+  lem-level15    interpreted 1500       untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   2   
+  lem-level20    interpreted 8780       untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   2   
+  lem-level25    interpreted 0          untranslated-entry addresses    0 (gap entries   0)  istat no-entry    0 smc-form   0   

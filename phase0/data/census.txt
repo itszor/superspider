@@ -1,0 +1,61 @@
+== galdan: 296 PC-writing sites (136 executed)
+  class                   sites   exec   >1 tgt tgt outside B0
+  ret-stack                 140     52       15              1
+  ret-lr                    131     71       23              5
+  computed-pc                11      6        4              0
+  mem-inline                  7      4        0              3
+  call:table                  4      1        1              1
+  const                       1      1        0              0
+  call:mem                    1      1        1              1
+  other                       1      0        0              0
+  tables / computed-pc: bound how: {'def-unbounded': 13, 'cmp': 2}  local(<=4): 13  spider: {'duff': 11, 'override:CALL': 4}
+  executed words missed by B0_auto: 870 in 28 regions; words reachable from B0 via (a region reachable several ways counts under each):
+    call:mem                                                        684 words
+    call:table                                                      103 words
+    runtime/OS-called handler (address not seen statically)          83 words
+
+== lemprog: 281 PC-writing sites (204 executed)
+  class                   sites   exec   >1 tgt tgt outside B0
+  ret-stack                 252    176       49             28
+  ret-lr+4                   14     14       14              3
+  ret-lr                     13     12        0              4
+  mem-inline                  1      1        0              0
+  table                       1      1        1              1
+  tables / computed-pc: bound how: {'and': 1}  local(<=4): 0  spider: {'override:CALL': 1}
+  executed words missed by B0_auto: 1196 in 31 regions; words reachable from B0 via (a region reachable several ways counts under each):
+    runtime/OS-called handler (adr)                                 758 words
+    table                                                           438 words
+  vs B0_generic (no Lemmings idiom patches): 5946 missed words; reachable via:
+    return to bl+8 (literal thunk)                                 5625 words
+    runtime/OS-called handler (adr)                                2588 words
+
+== lemboot: 40 PC-writing sites (31 executed)
+  class                   sites   exec   >1 tgt tgt outside B0
+  ret-stack                  26     18        9             18
+  ret-lr                      6      6        0              6
+  ret-lr+4                    5      4        1              4
+  const-outside               1      1        0              1
+  const                       1      1        0              0
+  mem-inline                  1      1        0              0
+  executed words missed by B0_auto: 543 in 26 regions; words reachable from B0 via (a region reachable several ways counts under each):
+    const-outside                                                   543 words
+    runtime/OS-called handler (adr)                                 128 words
+  vs B0_generic (no Lemmings idiom patches): 543 missed words; reachable via:
+    const-outside                                                   543 words
+    runtime/OS-called handler (adr)                                 128 words
+
+== musmod: 127 PC-writing sites (76 executed)
+  class                   sites   exec   >1 tgt tgt outside B0
+  ret-stack                  69     37        8             21
+  ret-lr                     54     37       20             19
+  ret-lr+4                    1      0        0              0
+  table                       1      1        1              0
+  live-in                     1      0        0              0
+  mem                         1      1        1              1
+  tables / computed-pc: bound how: {'cmp': 1}  local(<=4): 1  spider: {'xtable': 1}
+  executed words missed by B0_auto: 634 in 28 regions; words reachable from B0 via (a region reachable several ways counts under each):
+    runtime/OS-called handler (adr)                                 634 words
+  vs B0_generic (no Lemmings idiom patches): 1063 missed words; reachable via:
+    runtime/OS-called handler (adr)                                 970 words
+    fallthrough(stm)                                                520 words
+

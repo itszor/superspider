@@ -1,0 +1,147 @@
+image      exec   S1b code    exec∩    exec−  read−exec  accepted: executed / not run   rejected: executed
+galdan     7867      18541     7867        0         66  2 / 43   0     (address-taken: 45 accepted of 98 candidates examined
+code 18541 words, 161 functions, 802 data words, 10 unresolved, 1 assumed returns, 31 balance assumptions, 0 problems)
+   00008134  not run   rejected: only passed as an OS data poin swi &5 r0 data
+   000081bc  not run   rejected: invalid: cmnvs r3, #&110000    swi &20008 r4 data, swi &2c r4
+   000082fc  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00008780  not run   rejected: only passed as an OS data poin swi &31 r0 data
+   00009ec0  not run   rejected: invalid: stcle p4 (&dc00742d)  swi &2c r5
+   0000a800  not run   rejected: invalid: undefined (halfword/l stored
+   0000af14  not run   rejected: call to &1aa54c0 outside image stored
+   00013fb8  not run   rejected: only passed as an OS data poin swi &2e r2 data
+   00013fc4  not run   rejected: invalid: stcmi p4 (&4c20444f)  stored
+   0001416c  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000141c0  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   000179d0  not run   rejected: invalid: mcrmi p8 (&4e494854)  stored
+   00018570  not run   rejected: invalid: stcmi p9 (&4c4c494b)  stored
+   00018664  not run   rejected: invalid: cdpmi p0 (&4e45504f)  stored
+   00019324  not run   rejected: invalid: stcmi p0 (&4c430044)  stored
+   0001954c  not run   rejected: looks like text (weak evidence stored
+   00019678  not run   rejected: looks like text (weak evidence stored
+   000197e8  not run   rejected: invalid: ldcmi p0 (&4c502087)  stored
+   000197fc  not run   rejected: invalid: undefined (MRS/MSR/BX stored
+   000198c0  not run   rejected: call to &10e9e20 outside image stored
+   000198d8  not run   rejected: zero word or variable (weak ev stored
+   00019a2c  not run   rejected: flow to &11ed35c outside image stored
+   0001a598  not run   rejected: invalid: ldcmi p0 (&4c50007f)  stored
+   0001a65c  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   0001a6fc  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   0001a8f0  EXECUTED  accepted                                 stored, swi &1f r1 code, swi &20 r1 code
+   0001a9bc  EXECUTED  accepted                                 stored, swi &1f r1 code
+   0001aac4  not run   accepted                                 stored, swi &1f r1 code
+   0001abcc  not run   rejected: zero word or variable (weak ev stored
+   0001b0a4  not run   rejected: zero word or variable (weak ev stored
+   0001b5f0  not run   rejected: zero word or variable (weak ev swi &e4 r1
+   0001ba38  not run   rejected: only passed as an OS data poin swi &2e r1 data
+   00021d1c  not run   rejected: invalid: stcmi p7 (&4c41470a)  stored
+   000234e0  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   000239d8  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00023a00  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00024718  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00024994  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   0002499c  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00024ae8  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00024db4  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   00024e58  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   00024fb4  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00025154  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   000251a0  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00025610  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   00025858  not run   rejected: only passed as an OS data poin swi &46 r0 data
+   00025990  not run   rejected: only passed as an OS data poin swi &2e r2 data
+   00025c60  not run   rejected: only passed as an OS data poin swi &2e r2 data
+   00025e84  not run   rejected: invalid: undefined (halfword/l stored
+   000262b8  not run   accepted                                 swi &40183 r0+0 entry
+   000262bc  not run   accepted                                 swi &40183 r0+4 entry
+   000262c0  not run   accepted                                 swi &40183 r0+8 entry
+   000262c4  not run   accepted                                 swi &40183 r0+12 entry
+   000262c8  not run   accepted                                 swi &40183 r0+16 entry
+   000262cc  not run   accepted                                 swi &40183 r0+20 entry
+   000262d0  not run   accepted                                 swi &40183 r0+24 entry
+   0002633c  not run   accepted                                 swi &40183 r0+0 entry
+   00026340  not run   accepted                                 swi &40183 r0+4 entry
+   00026344  not run   accepted                                 swi &40183 r0+8 entry
+   00026348  not run   accepted                                 swi &40183 r0+12 entry
+   0002634c  not run   accepted                                 swi &40183 r0+16 entry
+   00026350  not run   accepted                                 swi &40183 r0+20 entry
+   00026354  not run   accepted                                 swi &40183 r0+24 entry
+   000263c0  not run   accepted                                 swi &40183 r0+0 entry
+   000263c4  not run   accepted                                 swi &40183 r0+4 entry
+   000263c8  not run   accepted                                 swi &40183 r0+8 entry
+   000263cc  not run   accepted                                 swi &40183 r0+12 entry
+   000263d0  not run   accepted                                 swi &40183 r0+16 entry
+   000263d4  not run   accepted                                 swi &40183 r0+20 entry
+   000263d8  not run   accepted                                 swi &40183 r0+24 entry
+   00026440  not run   accepted                                 swi &40183 r0+0 entry
+   00026444  not run   accepted                                 swi &40183 r0+4 entry
+   00026448  not run   accepted                                 swi &40183 r0+8 entry
+   0002644c  not run   accepted                                 swi &40183 r0+12 entry
+   00026450  not run   accepted                                 swi &40183 r0+16 entry
+   00026454  not run   accepted                                 swi &40183 r0+20 entry
+   00026458  not run   accepted                                 swi &40183 r0+24 entry
+   000264c4  not run   accepted                                 swi &40183 r0+0 entry
+   000264c8  not run   accepted                                 swi &40183 r0+4 entry
+   000264cc  not run   accepted                                 swi &40183 r0+8 entry
+   000264d0  not run   accepted                                 swi &40183 r0+12 entry
+   000264d4  not run   accepted                                 swi &40183 r0+16 entry
+   000264d8  not run   accepted                                 swi &40183 r0+20 entry
+   000264dc  not run   accepted                                 swi &40183 r0+24 entry
+   00026548  not run   accepted                                 swi &40183 r0+0 entry
+   0002654c  not run   accepted                                 swi &40183 r0+4 entry
+   00026550  not run   accepted                                 swi &40183 r0+8 entry
+   00026554  not run   accepted                                 swi &40183 r0+12 entry
+   00026558  not run   accepted                                 swi &40183 r0+16 entry
+   0002655c  not run   accepted                                 swi &40183 r0+20 entry
+   00026560  not run   accepted                                 swi &40183 r0+24 entry
+   00031044  not run   rejected: invalid: stcvs p4 (&6c826449)  stored
+   00031ce4  not run   rejected: flow to &30718e0 outside image stored
+   00034db8  not run   rejected: invalid: undefined (undefined  stored
+   00036638  not run   rejected: invalid: cdpls p6 (&9e9696ac)  stored
+   00049aec  not run   rejected: call to &1cd67cc outside image stored
+   0005a2ec  not run   rejected: only passed as an OS data poin swi &20008 r4 data
+lemprog    5973       9763     5972        1          0  2 / 0   0     (address-taken: 2 accepted of 25 candidates examined
+code 9763 words, 144 functions, 586 data words, 7 unresolved, 0 assumed returns, 6 balance assumptions, 0 problems)
+   000080d8  not run   rejected: only passed as an OS data poin swi &31 r0 data
+   00008198  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000084e8  not run   rejected: zero word or variable (weak ev swi &41c42 r4, swi &41c44 r4, swi &41c47 r4, swi &41c48 r4, 
+   00008530  EXECUTED  accepted                                 stored, swi &20016 r1
+   00016948  not run   rejected: invalid: stcvs p12 (&6d654c20) stored
+   0001986c  not run   rejected: only passed as an OS data poin swi &5 r0 data
+   00019878  not run   rejected: only passed as an OS data poin swi &5 r0 data
+   00019994  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   00019998  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000199c0  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000199c4  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000199ec  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   000199f0  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   00019eb8  not run   rejected: invalid: cdpmi p3 (&4e040300)  stored
+   00019ef4  not run   rejected: invalid: cdpmi p3 (&4e040300)  stored
+   00019f30  not run   rejected: invalid: cdpmi p3 (&4e040300)  stored
+   00019f6c  not run   rejected: invalid: cdpmi p3 (&4e040300)  stored
+   0001d078  not run   rejected: invalid: cdpmi p3 (&4e040300)  stored
+   00025350  not run   rejected: zero word or variable (weak ev swi &41c44 r2
+   00027ed8  not run   rejected: invalid: stcvs p12 (&6d654c3c) swi &61c49 r0
+   00028144  not run   rejected: only passed as an OS data poin swi &20008 r1 data
+   000283a4  not run   rejected: runs into data                 stored
+   0002a638  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   0002a654  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   0002a70c  EXECUTED  accepted                                 swi &1f r1 code, swi &20 r1 code
+lemboot     552        566      552        0          -  1 / 0   0     (address-taken: 1 accepted of 7 candidates examined
+code 566 words, 23 functions, 18 data words, 1 unresolved, 0 assumed returns, 0 balance assumptions, 0 problems)
+   000080fc  not run   rejected: only passed as an OS data poin swi &31 r0 data
+   00008408  not run   rejected: only passed as an OS data poin swi &5 r0 data
+   0000841c  not run   rejected: only passed as an OS data poin swi &5 r0 data
+   000087c4  not run   rejected: only passed as an OS data poin swi &20008 r4 data
+   0000880c  EXECUTED  accepted                                 stored, swi &20016 r1
+   00008b94  not run   rejected: only passed as an OS data poin swi &20008 r1 data
+   00008d08  not run   rejected: only passed as an OS data poin swi &7 r1 data
+musmod     1366       2012     1366        0          0  5 / 0   0     (address-taken: 5 accepted of 8 candidates examined
+code 2012 words, 76 functions, 37 data words, 2 unresolved, 1 assumed returns, 1 balance assumptions, 0 problems)
+   01802380  not run   rejected: zero word or variable (weak ev stored
+   01802444  EXECUTED  accepted                                 stored
+   01802608  EXECUTED  accepted                                 stored
+   018027cc  EXECUTED  accepted                                 stored
+   01802990  EXECUTED  accepted                                 stored
+   01802ddc  not run   rejected: only passed as an OS data poin swi &7 r1 data
+   01802ed0  EXECUTED  accepted                                 stored
+   01802f60  not run   rejected: too short (weak evidence)      stored

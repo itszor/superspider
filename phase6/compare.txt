@@ -1,0 +1,18 @@
+gd-headless (deterministic) outputs:
+  recomp.events  identical
+  recomp.vdu     identical
+  recomp.screen  identical
+  recomp.regs    identical
+
+session                 insns  interpreted  X words |      insns (SS)  interp (SS)   X (SS)
+gd-headless        5000000000            0     5152 |      5000000000            0     5152
+gd-play0            581432921            9     7621 |       581482142            9     7621
+gd-play1            712224660            9     7752 |       712124237            9     7752
+gd-play2            690678130            9     7592 |       690622817            9     7592
+lem-boot           3436427419            0     6783 |      3463516377            0     6780
+lem-level00        5657508799        20920     6546 |      6123186337         9220     6543
+lem-level05        5333148610        51656     6579 |      6303544441         1400     6576
+lem-level10        5620883061        32170     6718 |      6035036168         2080     6715
+lem-level15        5918275989        94858     6645 |      6423433552         1500     6642
+lem-level20        5398930339        75820     6640 |      6127746172         8780     6637
+lem-level25        7979513007        76774     6847 |      8701866735            0     6844

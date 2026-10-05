@@ -1,0 +1,201 @@
+words 125346 (NV 9186), compared 103489, coprocessor 10319, both undefined 4313, undefined here but capstone decodes 4935
+  capstone decodes these as (ARMv4+ / ARMv3+ expected): {'mrseq': 643, 'movweq': 295, 'ldrsbeq': 271, 'umullseq': 250, 'strdeq': 223, 'ldrhteq': 210, 'ldrshteq': 191, 'ldrdeq': 109, 'usaxpl': 105, 'ldrsheq': 100, 'ldrsble': 98, 'ldrheq': 93, 'strheq': 82, 'movteq': 55, 'ldrsht': 40, 'ldrsh': 38, 'usat': 36, 'udf': 32, 'movwne': 31, 'ldrd': 31}
+  coprocessor words capstone cannot decode: 799
+uses and ours-only rs/stored capstone-only []                          2180
+    galdan   00008050 0001dd34  32848 122164 dp cond=eq pc=false plausible=true defs=13 uses=1,4,13 op=and s=false rd=13 rn=1 imm=- | capstone andeq sp, r1, r4, lsr sp
+    galdan   00008054 0000023c  32852 572 dp cond=eq pc=false plausible=true defs=0 uses=0,12,2 op=and s=false rd=0 rn=0 imm=- | capstone andeq r0, r0, ip, lsr r2
+plausible (ours False) vs valid_arm2 (True)                            1802
+    galdan   000081bc 63736944  None / 33212 1668507972 dp cond=vs pc=false plausible=false defs= uses=3 op=cmn s=true rd=6 rn=3 imm=1114112
+    galdan   000081c0 61502431  None / 33216 1632642097 dp cond=vs pc=false plausible=false defs= uses=0,1,4 op=cmp s=true rd=2 rn=0 imm=-
+ours valid, capstone fails                                             1491
+    galdan   0000a00c f3adb56d  40972 4088247661 dp cond=nv pc=false plausible=false defs=11 uses= op=mov s=false rd=11 rn=13 imm=457179136
+    galdan   0000a0b8 23e59053  41144 602247251 dp cond=cs pc=false plausible=false defs=9 uses= op=mvn s=false rd=9 rn=5 imm=83
+uses eor ours-only rs/stored capstone-only []                          750
+    galdan   0000a060 c03b9e71  41056 3225132657 dp cond=gt pc=false plausible=true defs=9 uses=11,1,14 op=eor s=true rd=9 rn=11 imm=- | capstone eorsgt sb, fp, r1, ror lr
+    galdan   0000a15c f036de50  41308 4030127696 dp cond=nv pc=false plausible=true defs=13 uses=6,0,14 op=eor s=true rd=13 rn=6 imm=- | capstone eors sp, r6, r0, asr lr
+defs stm ours-only [13] capstone-only []                               619
+    lemprog  000080bc e92d4000  32956 3912056832 stm cond=al pc=false plausible=true defs=13 uses=13,14 rn=13 regs=16384 wb=true psr=false | capstone stmdb sp!, {lr}
+    lemprog  000080e0 e92d4000  32992 3912056832 stm cond=al pc=false plausible=true defs=13 uses=13,14 rn=13 regs=16384 wb=true psr=false | capstone stmdb sp!, {lr}
+uses sub ours-only rs/stored capstone-only []                          477
+    galdan   000082fc 00400419  33532 4195353 dp cond=eq pc=false plausible=true defs=0 uses=0,9,4 op=sub s=false rd=0 rn=0 imm=- | capstone subeq r0, r0, sb, lsl r4
+    galdan   00013fd4 204b4355  81876 541803349 dp cond=cs pc=false plausible=true defs=4 uses=11,5,3 op=sub s=false rd=4 rn=11 imm=- | capstone subhs r4, fp, r5, asr r3
+uses rsb ours-only rs/stored capstone-only []                          440
+    galdan   0001c8ec 60626377  116972 1617060727 dp cond=vs pc=false plausible=true defs=6 uses=2,7,3 op=rsb s=false rd=6 rn=2 imm=- | capstone rsbvs r6, r2, r7, ror r3
+    galdan   00021dd8 20616976  138712 543254902 dp cond=cs pc=false plausible=true defs=6 uses=1,6,9 op=rsb s=false rd=6 rn=1 imm=- | capstone rsbhs r6, r1, r6, ror sb
+defs str ours-only [4] capstone-only []                                372
+    galdan   00008190 64646c64  33168 1684302948 str cond=vs pc=false plausible=true defs=4 uses=6,4 byte=true pre=false up=false wb=true rd=6 rn=4 imm=3172 | capstone strbtvs r6, [r4], #-0xc64
+    galdan   00008194 64646464  33172 1684300900 str cond=vs pc=false plausible=true defs=4 uses=6,4 byte=true pre=false up=false wb=true rd=6 rn=4 imm=1124 | capstone strbtvs r6, [r4], #-0x464
+defs ldr ours-only [4] capstone-only [] (post-index)                   326
+    galdan   0000805c 7474746c  32860 1953789036 ldr cond=vc pc=false plausible=true defs=7,4 uses=4 byte=true pre=false up=false wb=true rd=7 rn=4 imm=1132 | capstone ldrbtvc r7, [r4], #-0x46c
+    galdan   00008064 74747c7c  32868 1953791100 ldr cond=vc pc=false plausible=true defs=7,4 uses=4 byte=true pre=false up=false wb=true rd=7 rn=4 imm=3196 | capstone ldrbtvc r7, [r4], #-0xc7c
+uses stm ours-only rs/stored capstone-only []                          315
+    galdan   00008118 79206565  33048 2032166245 stm cond=vc pc=false plausible=true defs=0 uses=0,0,2,5,6,8,10,13,14 rn=0 regs=25957 wb=true psr=false | capstone stmdbvc r0!, {r0, r2, r5, r6, r8, sl, sp, lr}
+    galdan   0000a2b4 292a6421  41652 690644001 stm cond=cs pc=false plausible=true defs=10 uses=10,0,5,10,13,14 rn=10 regs=25633 wb=true psr=false | capstone stmdbhs sl!, {r0, r5, sl, sp, lr}
+defs str ours-only [12] capstone-only []                               236
+    galdan   000081a0 646c6464  33184 1684825188 str cond=vs pc=false plausible=true defs=12 uses=6,12 byte=true pre=false up=false wb=true rd=6 rn=12 imm=1124 | capstone strbtvs r6, [ip], #-0x464
+    galdan   000081a4 646c746c  33188 1684829292 str cond=vs pc=false plausible=true defs=12 uses=7,12 byte=true pre=false up=false wb=true rd=7 rn=12 imm=1132 | capstone strbtvs r7, [ip], #-0x46c
+defs str ours-only [6] capstone-only []                                235
+    galdan   0000a29c c466838a  41628 3295052682 str cond=gt pc=false plausible=true defs=6 uses=8,6 byte=true pre=false up=false wb=true rd=8 rn=6 imm=906 | capstone strbtgt r8, [r6], #-0x38a
+    galdan   0001a87c 74666f53  108668 1952870227 str cond=vc pc=false plausible=true defs=6 uses=6,6 byte=true pre=false up=false wb=true rd=6 rn=6 imm=3923 | capstone strbtvc r6, [r6], #-0xf53
+defs str ours-only [2] capstone-only []                                187
+    galdan   0001fff4 24626205  131060 610427397 str cond=cs pc=false plausible=true defs=2 uses=6,2 byte=true pre=false up=false wb=true rd=6 rn=2 imm=517 | capstone strbths r6, [r2], #-0x205
+    galdan   00026b84 64a292ac  158596 1688375980 str cond=vs pc=false plausible=true defs=2 uses=9,2 byte=false pre=false up=true wb=true rd=9 rn=2 imm=684 | capstone strtvs sb, [r2], #0x2ac
+uses tst ours-only rs/stored capstone-only []                          182
+    galdan   000141fc 01176119  82428 18309401 dp cond=eq pc=false plausible=false defs= uses=7,9,1 op=tst s=true rd=6 rn=7 imm=- | capstone tsteq r7, sb, lsl r1
+    galdan   0001c090 01131617  114832 18028055 dp cond=eq pc=false plausible=false defs= uses=3,7,6 op=tst s=true rd=1 rn=3 imm=- | capstone tsteq r3, r7, lsl r6
+defs ldr ours-only [12] capstone-only [] (post-index)                  172
+    galdan   00027110 d6dcd2c6  160016 3604796102 ldr cond=le pc=false plausible=true defs=13,12 uses=12,6 byte=true pre=false up=true wb=false rd=13 rn=12 imm=- | capstone ldrble sp, [ip], r6, asr #5
+    galdan   00027eb4 647c319f  163508 1685860767 ldr cond=vs pc=false plausible=true defs=3,12 uses=12 byte=true pre=false up=false wb=true rd=3 rn=12 imm=415 | capstone ldrbtvs r3, [ip], #-0x19f
+defs str ours-only [0] capstone-only []                                168
+    galdan   00019558 44204d45  103768 1142967621 str cond=mi pc=false plausible=true defs=0 uses=4,0 byte=false pre=false up=false wb=true rd=4 rn=0 imm=3397 | capstone strtmi r4, [r0], #-0xd45
+    galdan   0001b0b0 46204d45  110768 1176522053 str cond=mi pc=false plausible=true defs=0 uses=4,0,5 byte=false pre=false up=false wb=true rd=4 rn=0 imm=- | capstone strtmi r4, [r0], -r5, asr #26
+defs str ours-only [8] capstone-only []                                148
+    galdan   00022808 74686769  141320 1952999273 str cond=vc pc=false plausible=true defs=8 uses=6,8 byte=true pre=false up=false wb=true rd=6 rn=8 imm=1897 | capstone strbtvc r6, [r8], #-0x769
+    galdan   000283b4 96484848  164788 2521319496 str cond=ls pc=false plausible=true defs=8 uses=4,8,8 byte=true pre=false up=false wb=false rd=4 rn=8 imm=- | capstone strbls r4, [r8], -r8, asr #16
+uses teq ours-only rs/stored capstone-only []                          146
+    galdan   0001fe74 31320310  130676 825361168 dp cond=cc pc=false plausible=true defs= uses=2,0,3 op=teq s=true rd=0 rn=2 imm=- | capstone teqlo r2, r0, lsl r3
+    galdan   0001ffb8 01313233  131000 20001331 dp cond=eq pc=false plausible=false defs= uses=1,3,2 op=teq s=true rd=3 rn=1 imm=- | capstone teqeq r1, r3, lsr r2
+defs str ours-only [14] capstone-only []                               125
+    galdan   00021ebc 646e6120  138940 1684955424 str cond=vs pc=false plausible=true defs=14 uses=6,14 byte=true pre=false up=false wb=true rd=6 rn=14 imm=288 | capstone strbtvs r6, [lr], #-0x120
+    galdan   000223e8 746e7943  140264 1953397059 str cond=vc pc=false plausible=true defs=14 uses=7,14 byte=true pre=false up=false wb=true rd=7 rn=14 imm=2371 | capstone strbtvc r7, [lr], #-0x943
+defs ldr ours-only [14] capstone-only [] (post-index)                  124
+    galdan   00020774 763e3e6e  132980 1983790702 ldr cond=vc pc=false plausible=true defs=3,14 uses=14,14 byte=false pre=false up=false wb=true rd=3 rn=14 imm=- | capstone ldrtvc r3, [lr], -lr, ror #28
+    galdan   00025268 b4beac09  152168 3032394761 ldr cond=lt pc=false plausible=true defs=10,14 uses=14 byte=false pre=false up=true wb=true rd=10 rn=14 imm=3081 | capstone ldrtlt sl, [lr], #0xc09
+uses cmp ours-only rs/stored capstone-only []                          116
+    galdan   000081c0 61502431  33216 1632642097 dp cond=vs pc=false plausible=false defs= uses=0,1,4 op=cmp s=true rd=2 rn=0 imm=- | capstone cmpvs r0, r1, lsr r4
+    galdan   0000ce28 2156505a  52776 559304794 dp cond=cs pc=false plausible=false defs= uses=6,10,0 op=cmp s=true rd=5 rn=6 imm=- | capstone cmphs r6, sl, asr r0
+defs str ours-only [10] capstone-only []                               115
+    galdan   00027108 d6aa3183  160008 3601478019 str cond=le pc=false plausible=true defs=10 uses=3,10,3 byte=false pre=false up=true wb=true rd=3 rn=10 imm=- | capstone strtle r3, [sl], r3, lsl #3
+    galdan   00027480 c6caa283  160896 3335168643 str cond=gt pc=false plausible=true defs=10 uses=10,10,3 byte=true pre=false up=true wb=false rd=10 rn=10 imm=- | capstone strbgt sl, [sl], r3, lsl #5
+uses cmn ours-only rs/stored capstone-only []                          109
+    galdan   000149b4 61747379  84404 1635021689 dp cond=vs pc=false plausible=false defs= uses=4,9,3 op=cmn s=true rd=7 rn=4 imm=- | capstone cmnvs r4, sb, ror r3
+    galdan   00024124 61772074  147748 1635197044 dp cond=vs pc=false plausible=false defs= uses=7,4,0 op=cmn s=true rd=2 rn=7 imm=- | capstone cmnvs r7, r4, ror r0
+defs ldr ours-only [0] capstone-only [] (post-index)                   100
+    galdan   0000a214 6670678d  41492 1718642573 ldr cond=vs pc=false plausible=true defs=6,0 uses=0,13 byte=true pre=false up=false wb=true rd=6 rn=0 imm=- | capstone ldrbtvs r6, [r0], -sp, lsl #15
+    galdan   0000ce0c 56505a21  52748 1448106529 ldr cond=pl pc=false plausible=true defs=5,0 uses=0,1 byte=true pre=false up=false wb=false rd=5 rn=0 imm=- | capstone ldrbpl r5, [r0], -r1, lsr #20
+defs ldr ours-only [6] capstone-only [] (post-index)                   95
+    galdan   000203d0 56565681  132048 1448498817 ldr cond=pl pc=false plausible=true defs=5,6 uses=6,1 byte=true pre=false up=false wb=false rd=5 rn=6 imm=- | capstone ldrbpl r5, [r6], -r1, lsl #13
+    galdan   00020410 56568181  132112 1448509825 ldr cond=pl pc=false plausible=true defs=8,6 uses=6,1 byte=true pre=false up=false wb=false rd=8 rn=6 imm=- | capstone ldrbpl r8, [r6], -r1, lsl #3
+defs ldr ours-only [2] capstone-only [] (post-index)                   84
+    galdan   00022054 64726175  139348 1685217653 ldr cond=vs pc=false plausible=true defs=6,2 uses=2 byte=true pre=false up=false wb=true rd=6 rn=2 imm=373 | capstone ldrbtvs r6, [r2], #-0x175
+    galdan   00022130 64726f63  139568 1685221219 ldr cond=vs pc=false plausible=true defs=6,2 uses=2 byte=true pre=false up=false wb=true rd=6 rn=2 imm=3939 | capstone ldrbtvs r6, [r2], #-0xf63
+defs ldr ours-only [1] capstone-only [] (post-index)                   78
+    galdan   0001499c 74310070  84380 1949368432 ldr cond=vc pc=false plausible=true defs=0,1 uses=1 byte=false pre=false up=false wb=true rd=0 rn=1 imm=112 | capstone ldrtvc r0, [r1], #-0x70
+    galdan   00014a24 74310061  84516 1949368417 ldr cond=vc pc=false plausible=true defs=0,1 uses=1 byte=false pre=false up=false wb=true rd=0 rn=1 imm=97 | capstone ldrtvc r0, [r1], #-0x61
+defs str ours-only [5] capstone-only []                                76
+    galdan   0000a3c0 c4e59c4a  41920 3303382090 str cond=gt pc=false plausible=true defs=5 uses=9,5 byte=true pre=false up=true wb=true rd=9 rn=5 imm=3146 | capstone strbtgt sb, [r5], #0xc4a
+    galdan   000200f4 54252555  131316 1411720533 str cond=pl pc=false plausible=true defs=5 uses=2,5 byte=false pre=false up=false wb=true rd=2 rn=5 imm=1365 | capstone strtpl r2, [r5], #-0x555
+defs ldr ours-only [8] capstone-only [] (post-index)                   76
+    galdan   00026de0 c6b8a6ce  159200 3333990094 ldr cond=gt pc=false plausible=true defs=10,8 uses=8,14 byte=false pre=false up=true wb=true rd=10 rn=8 imm=- | capstone ldrtgt sl, [r8], lr, asr #13
+    galdan   00026e00 c6d8cece  159232 3336097486 ldr cond=gt pc=false plausible=true defs=12,8 uses=8,14 byte=true pre=false up=true wb=false rd=12 rn=8 imm=- | capstone ldrbgt ip, [r8], lr, asr #29
+defs ldr ours-only [10] capstone-only [] (post-index)                  64
+    galdan   0000a2ac e63a8480  41644 3862594688 ldr cond=al pc=false plausible=true defs=8,10 uses=10,0 byte=false pre=false up=false wb=true rd=8 rn=10 imm=- | capstone ldrt r8, [sl], -r0, lsl #9
+    galdan   00026bc8 74ba008a  158664 1958346890 ldr cond=vc pc=false plausible=true defs=0,10 uses=10 byte=false pre=false up=true wb=true rd=0 rn=10 imm=138 | capstone ldrtvc r0, [sl], #0x8a
+uses add ours-only rs/stored capstone-only []                          56
+    galdan   0000a140 d0826874  41280 3498207348 dp cond=le pc=false plausible=true defs=6 uses=2,4,8 op=add s=false rd=6 rn=2 imm=- | capstone addle r6, r2, r4, ror r8
+    galdan   0000a1b4 f0931b1f  41396 4036172575 dp cond=nv pc=false plausible=true defs=1 uses=3,15,11 op=add s=true rd=1 rn=3 imm=- | capstone adds r1, r3, pc, lsl fp
+defs ldr ours-only [5] capstone-only [] (post-index)                   53
+    galdan   0000a168 16559862  41320 374708322 ldr cond=ne pc=false plausible=true defs=9,5 uses=5,2 byte=true pre=false up=false wb=false rd=9 rn=5 imm=- | capstone ldrbne sb, [r5], -r2, ror #16
+    galdan   0001bee8 7675012b  114408 1987379499 ldr cond=vc pc=false plausible=true defs=0,5 uses=5,11 byte=true pre=false up=false wb=true rd=0 rn=5 imm=- | capstone ldrbtvc r0, [r5], -fp, lsr #2
+defs str ours-only [1] capstone-only []                                53
+    galdan   00013fb8 74617473  81848 1952543859 str cond=vc pc=false plausible=true defs=1 uses=7,1 byte=true pre=false up=false wb=true rd=7 rn=1 imm=1139 | capstone strbtvc r7, [r1], #-0x473
+    galdan   0001ba4c 74617473  113228 1952543859 str cond=vc pc=false plausible=true defs=1 uses=7,1 byte=true pre=false up=false wb=true rd=7 rn=1 imm=1139 | capstone strbtvc r7, [r1], #-0x473
+uses orr ours-only rs/stored capstone-only []                          50
+    galdan   0000a040 a18c377a  41024 2710321018 dp cond=ge pc=false plausible=true defs=3 uses=12,10,7 op=orr s=false rd=3 rn=12 imm=- | capstone orrge r3, ip, sl, ror r7
+    galdan   000170ac 01940153  94380 26476883 dp cond=eq pc=false plausible=true defs=0 uses=4,3,1 op=orr s=true rd=0 rn=4 imm=- | capstone orrseq r0, r4, r3, asr r1
+defs stm ours-only [9] capstone-only []                                48
+    galdan   0001ca20 292901e1  117280 690553313 stm cond=cs pc=false plausible=true defs=9 uses=9,0,5,6,7,8 rn=9 regs=481 wb=true psr=false | capstone stmdbhs sb!, {r0, r5, r6, r7, r8}
+    galdan   0001ca50 29292901  117328 690563329 stm cond=cs pc=false plausible=true defs=9 uses=9,0,8,11,13 rn=9 regs=10497 wb=true psr=false | capstone stmdbhs sb!, {r0, r8, fp, sp}
+defs str ours-only [13] capstone-only []                               48
+    galdan   00021e14 742d7961  138772 1949137249 str cond=vc pc=false plausible=true defs=13 uses=7,13 byte=false pre=false up=false wb=true rd=7 rn=13 imm=2401 | capstone strtvc r7, [sp], #-0x961
+    galdan   00023f3c 442d0c8f  147260 1143803023 str cond=mi pc=false plausible=true defs=13 uses=0,13 byte=false pre=false up=false wb=true rd=0 rn=13 imm=3215 | capstone strtmi r0, [sp], #-0xc8f
+defs str ours-only [9] capstone-only []                                44
+    galdan   00014968 64697073  84328 1684631667 str cond=vs pc=false plausible=true defs=9 uses=7,9 byte=true pre=false up=false wb=true rd=7 rn=9 imm=115 | capstone strbtvs r7, [sb], #-0x73
+    galdan   0001b0e8 56495443  110824 1447646275 str cond=pl pc=false plausible=true defs=9 uses=5,9,3 byte=true pre=false up=false wb=false rd=5 rn=9 imm=- | capstone strbpl r5, [sb], -r3, asr #8
+uses adc ours-only rs/stored capstone-only []                          42
+    galdan   0000a1a4 90b67c7b  41380 2427878523 dp cond=ls pc=false plausible=true defs=7 uses=6,11,12 op=adc s=true rd=7 rn=6 imm=- | capstone adcsls r7, r6, fp, ror ip
+    galdan   00024f20 00a3005c  151328 10682460 dp cond=eq pc=false plausible=true defs=0 uses=3,12,0 op=adc s=false rd=0 rn=3 imm=- | capstone adceq r0, r3, ip, asr r0
+defs str ours-only [3] capstone-only []                                37
+    galdan   0000a0cc 14a386bc  41164 346261180 str cond=ne pc=false plausible=true defs=3 uses=8,3 byte=false pre=false up=true wb=true rd=8 rn=3 imm=1724 | capstone strtne r8, [r3], #0x6bc
+    galdan   0000a11c e463e986  41244 3831753094 str cond=al pc=false plausible=true defs=3 uses=14,3 byte=true pre=false up=false wb=true rd=14 rn=3 imm=2438 | capstone strbt lr, [r3], #-0x986
+defs str ours-only [7] capstone-only []                                37
+    galdan   000200b4 54270154  131252 1411842388 str cond=pl pc=false plausible=true defs=7 uses=0,7 byte=false pre=false up=false wb=true rd=0 rn=7 imm=340 | capstone strtpl r0, [r7], #-0x154
+    galdan   00022a08 64676e69  141832 1684500073 str cond=vs pc=false plausible=true defs=7 uses=6,7 byte=true pre=false up=false wb=true rd=6 rn=7 imm=3689 | capstone strbtvs r6, [r7], #-0xe69
+defs ldr ours-only [3] capstone-only [] (post-index)                   36
+    galdan   0000ce10 46534221  52752 1179861537 ldr cond=mi pc=false plausible=true defs=4,3 uses=3,1 byte=true pre=false up=false wb=false rd=4 rn=3 imm=- | capstone ldrbmi r4, [r3], -r1, lsr #4
+    galdan   00014990 74737972  84368 1953724786 ldr cond=vc pc=false plausible=true defs=7,3 uses=3 byte=true pre=false up=false wb=true rd=7 rn=3 imm=2418 | capstone ldrbtvc r7, [r3], #-0x972
+uses sbc ours-only rs/stored capstone-only []                          33
+    galdan   00020868 00dc6018  133224 14442520 dp cond=eq pc=false plausible=true defs=6 uses=12,8,0 op=sbc s=true rd=6 rn=12 imm=- | capstone sbcseq r6, ip, r8, lsl r0
+    galdan   00025914 00d50053  153876 13959251 dp cond=eq pc=false plausible=true defs=0 uses=5,3,0 op=sbc s=true rd=0 rn=5 imm=- | capstone sbcseq r0, r5, r3, asr r0
+defs ldr ours-only [13] capstone-only [] (post-index)                  31
+    galdan   0000a1a0 a47d63a1  41376 2759680929 ldr cond=ge pc=false plausible=true defs=6,13 uses=13 byte=true pre=false up=false wb=true rd=6 rn=13 imm=929 | capstone ldrbtge r6, [sp], #-0x3a1
+    galdan   00026bf4 967daea4  158708 2524819108 ldr cond=ls pc=false plausible=true defs=10,13 uses=13,4 byte=true pre=false up=false wb=true rd=10 rn=13 imm=- | capstone ldrbtls sl, [sp], -r4, lsr #29
+defs str ours-only [15] capstone-only []                               28
+    galdan   00023a88 666f2064  146056 1718558820 str cond=vs pc=true plausible=false defs=15 uses=2,15,4 byte=true pre=false up=false wb=true rd=2 rn=15 imm=- | capstone strbtvs r2, [pc], -r4, rrx
+    galdan   000252dc 94afa6bc  152284 2494539452 str cond=ls pc=true plausible=false defs=15 uses=10,15 byte=false pre=false up=true wb=true rd=10 rn=15 imm=1724 | capstone strtls sl, [pc], #0x6bc
+defs stm ours-only [0] capstone-only []                                27
+    galdan   00008118 79206565  33048 2032166245 stm cond=vc pc=false plausible=true defs=0 uses=0,0,2,5,6,8,10,13,14 rn=0 regs=25957 wb=true psr=false | capstone stmdbvc r0!, {r0, r2, r5, r6, r8, sl, sp, lr}
+    galdan   00021f5c 69207365  139100 1763734373 stm cond=vs pc=false plausible=true defs=0 uses=0,0,2,5,6,8,9,12,13,14 rn=0 regs=29541 wb=true psr=false | capstone stmdbvs r0!, {r0, r2, r5, r6, r8, sb, ip, sp, lr}
+defs str ours-only [11] capstone-only []                               27
+    galdan   0000a108 d4eb31b2  41224 3572183474 str cond=le pc=false plausible=true defs=11 uses=3,11 byte=true pre=false up=true wb=true rd=3 rn=11 imm=434 | capstone strbtle r3, [fp], #0x1b2
+    galdan   0001ca04 164be0e1  117252 374071521 str cond=ne pc=false plausible=true defs=11 uses=14,11,1 byte=true pre=false up=false wb=false rd=14 rn=11 imm=- | capstone strbne lr, [fp], -r1, ror #1
+uses bic ours-only rs/stored capstone-only []                          27
+    galdan   00024760 01c06119  149344 29384985 dp cond=eq pc=false plausible=true defs=6 uses=0,9,1 op=bic s=false rd=6 rn=0 imm=- | capstone biceq r6, r0, sb, lsl r1
+    galdan   00027358 d1cfc775  160600 3520055157 dp cond=le pc=false plausible=true defs=12 uses=15,5,7 op=bic s=false rd=12 rn=15 imm=- | capstone bicle ip, pc, r5, ror r7
+defs ldr ours-only [9] capstone-only [] (post-index)                   24
+    galdan   0000a158 a63974c9  41304 2788783305 ldr cond=ge pc=false plausible=true defs=7,9 uses=9,9 byte=false pre=false up=false wb=true rd=7 rn=9 imm=- | capstone ldrtge r7, [sb], -sb, asr #9
+    galdan   00027620 74b9dbe5  161312 1958337509 ldr cond=vc pc=false plausible=true defs=13,9 uses=9 byte=false pre=false up=true wb=true rd=13 rn=9 imm=3045 | capstone ldrtvc sp, [sb], #0xbe5
+defs stm ours-only [10] capstone-only []                               24
+    galdan   0000a2b4 292a6421  41652 690644001 stm cond=cs pc=false plausible=true defs=10 uses=10,0,5,10,13,14 rn=10 regs=25633 wb=true psr=false | capstone stmdbhs sl!, {r0, r5, sl, sp, lr}
+    galdan   0001ca24 292a292a  117284 690628906 stm cond=cs pc=false plausible=true defs=10 uses=10,1,3,5,8,11,13 rn=10 regs=10538 wb=true psr=false | capstone stmdbhs sl!, {r1, r3, r5, r8, fp, sp}
+defs ldr ours-only [7] capstone-only [] (post-index)                   23
+    galdan   0000a2d0 1637e343  41680 372761411 ldr cond=ne pc=false plausible=true defs=14,7 uses=7,3 byte=false pre=false up=false wb=true rd=14 rn=7 imm=- | capstone ldrtne lr, [r7], -r3, asr #6
+    galdan   0002114c 54373736  135500 1412904758 ldr cond=pl pc=false plausible=true defs=3,7 uses=7 byte=false pre=false up=false wb=true rd=3 rn=7 imm=1846 | capstone ldrtpl r3, [r7], #-0x736
+defs ldr ours-only [11] capstone-only [] (post-index)                  22
+    galdan   00027de4 86bbc5c5  163300 2260452805 ldr cond=hi pc=false plausible=true defs=12,11 uses=11,5 byte=false pre=false up=true wb=true rd=12 rn=11 imm=- | capstone ldrthi ip, [fp], r5, asr #11
+    galdan   000334b0 74fbffff  210096 1962672127 ldr cond=vc pc=true plausible=true defs=15,11 uses=11 byte=true pre=false up=true wb=true rd=15 rn=11 imm=4095 | capstone ldrbtvc pc, [fp], #0xfff
+defs ldr ours-only [15] capstone-only [] (post-index)                  19
+    galdan   0000a144 f65fdc2a  41284 4133477418 ldr cond=nv pc=true plausible=false defs=13,15 uses=15,10 byte=true pre=false up=false wb=false rd=13 rn=15 imm=- | capstone ldrb sp, [pc], -sl, lsr #24
+    galdan   00028c3c 74bf747d  166972 1958704253 ldr cond=vc pc=true plausible=false defs=7,15 uses=15 byte=false pre=false up=true wb=true rd=7 rn=15 imm=1149 | capstone ldrtvc r7, [pc], #0x47d
+defs stm ours-only [8] capstone-only []                                14
+    galdan   0001cdd4 29282929  118228 690497833 stm cond=cs pc=false plausible=true defs=8 uses=8,0,3,5,8,11,13 rn=8 regs=10537 wb=true psr=false | capstone stmdbhs r8!, {r0, r3, r5, r8, fp, sp}
+    galdan   0001cde0 29282929  118240 690497833 stm cond=cs pc=false plausible=true defs=8 uses=8,0,3,5,8,11,13 rn=8 regs=10537 wb=true psr=false | capstone stmdbhs r8!, {r0, r3, r5, r8, fp, sp}
+uses rsc ours-only rs/stored capstone-only []                          14
+    galdan   0003a828 00ea6d59  239656 15363417 dp cond=eq pc=false plausible=true defs=6 uses=10,9,13 op=rsc s=false rd=6 rn=10 imm=- | capstone rsceq r6, sl, sb, asr sp
+    lemprog  0000e800 20e03370  59392 551564144 dp cond=cs pc=false plausible=true defs=3 uses=0,0,3 op=rsc s=false rd=3 rn=0 imm=- | capstone rschs r3, r0, r0, ror r3
+uses mvn ours-only rs/stored capstone-only []                          9
+    galdan   000249e4 01e06119  149988 31482137 dp cond=eq pc=false plausible=true defs=6 uses=9,1 op=mvn s=false rd=6 rn=0 imm=- | capstone mvneq r6, sb, lsl r1
+    galdan   00025884 01ec0419  153732 32244761 dp cond=eq pc=false plausible=false defs=0 uses=9,4 op=mvn s=false rd=0 rn=12 imm=- | capstone mvneq r0, sb, lsl r4
+defs stm ours-only [4] capstone-only []                                5
+    lemprog  0000edf0 f9243320  60912 4179899168 stm cond=nv pc=false plausible=true defs=4 uses=4,5,8,9,12,13 rn=4 regs=13088 wb=true psr=false | capstone stmdb r4!, {r5, r8, sb, ip, sp}
+    lemprog  00010ca8 99243323  68776 2569286435 stm cond=ls pc=false plausible=true defs=4 uses=4,0,1,5,8,9,12,13 rn=4 regs=13091 wb=true psr=false | capstone stmdbls r4!, {r0, r1, r5, r8, sb, ip, sp}
+defs stm ours-only [11] capstone-only []                               4
+    galdan   00049b3c 892b8842  301884 2301331522 stm cond=hi pc=false plausible=true defs=11 uses=11,1,6,11,15 rn=11 regs=34882 wb=true psr=false | capstone stmdbhi fp!, {r1, r6, fp, pc}
+    lemprog  0000c328 c92bbedc  49960 3375087324 stm cond=gt pc=false plausible=true defs=11 uses=11,2,3,4,6,7,9,10,11,12,13,15 rn=11 regs=48860 wb=true psr=false | capstone stmdbgt fp!, {r2, r3, r4, r6, r7, sb, sl, fp, ip, sp, pc}
+defs stm ours-only [5] capstone-only []                                3
+    lemprog  0000cde4 f9250f07  52708 4179955463 stm cond=nv pc=false plausible=true defs=5 uses=5,0,1,2,8,9,10,11 rn=5 regs=3847 wb=true psr=false | capstone stmdb r5!, {r0, r1, r2, r8, sb, sl, fp}
+    lemprog  0000d1c0 39253531  53696 958739761 stm cond=cc pc=false plausible=true defs=5 uses=5,0,4,5,8,10,12,13 rn=5 regs=13617 wb=true psr=false | capstone stmdblo r5!, {r0, r4, r5, r8, sl, ip, sp}
+defs stm ours-only [7] capstone-only []                                3
+    lemprog  0000d464 69276611  54372 1764189713 stm cond=vs pc=false plausible=true defs=7 uses=7,0,4,9,10,13,14 rn=7 regs=26129 wb=true psr=false | capstone stmdbvs r7!, {r0, r4, sb, sl, sp, lr}
+    lemprog  00010c44 c927db55  68676 3374832469 stm cond=gt pc=false plausible=true defs=7 uses=7,0,2,4,6,8,9,11,12,14,15 rn=7 regs=56149 wb=true psr=false | capstone stmdbgt r7!, {r0, r2, r4, r6, r8, sb, fp, ip, lr, pc}
+defs stm ours-only [2] capstone-only []                                3
+    lemprog  000112e4 b92248c8  70372 3106031816 stm cond=lt pc=false plausible=true defs=2 uses=2,3,6,7,11,14 rn=2 regs=18632 wb=true psr=false | capstone stmdblt r2!, {r3, r6, r7, fp, lr}
+    lemprog  00015b94 8922c6c0  88980 2300757696 stm cond=hi pc=false plausible=true defs=2 uses=2,6,7,9,10,14,15 rn=2 regs=50880 wb=true psr=false | capstone stmdbhi r2!, {r6, r7, sb, sl, lr, pc}
+defs stm ours-only [1] capstone-only []                                2
+    galdan   0000cde4 49214a21  52708 1226918433 stm cond=mi pc=false plausible=true defs=1 uses=1,0,5,9,11,14 rn=1 regs=18977 wb=true psr=false | capstone stmdbmi r1!, {r0, r5, sb, fp, lr}
+    lemprog  000101b0 79216c83  65968 2032233603 stm cond=vc pc=false plausible=true defs=1 uses=1,0,1,7,10,11,13,14 rn=1 regs=27779 wb=true psr=false | capstone stmdbvc r1!, {r0, r1, r7, sl, fp, sp, lr}
+defs stm ours-only [14] capstone-only []                               2
+    galdan   00023dc4 492e422e  146884 1227768366 stm cond=mi pc=false plausible=true defs=14 uses=14,1,2,3,5,9,14 rn=14 regs=16942 wb=true psr=false | capstone stmdbmi lr!, {r1, r2, r3, r5, sb, lr}
+    lemprog  0000d6c0 692e643c  54976 1764647996 stm cond=vs pc=false plausible=true defs=14 uses=14,2,3,4,5,10,13,14 rn=14 regs=25660 wb=true psr=false | capstone stmdbvs lr!, {r2, r3, r4, r5, sl, sp, lr}
+defs stm ours-only [12] capstone-only []                               2
+    lemprog  0000c79c e92ce128  51100 3912032552 stm cond=al pc=false plausible=true defs=12 uses=12,3,5,8,13,14,15 rn=12 regs=57640 wb=true psr=false | capstone stmdb ip!, {r3, r5, r8, sp, lr, pc}
+    lemprog  0000fa64 492c2c47  64100 1227631687 stm cond=mi pc=false plausible=true defs=12 uses=12,0,1,2,6,10,11,13 rn=12 regs=11335 wb=true psr=false | capstone stmdbmi ip!, {r0, r1, r2, r6, sl, fp, sp}
+defs stm ours-only [6] capstone-only []                                2
+    lemprog  0000cb6c f92605f4  52076 4180018676 stm cond=nv pc=false plausible=true defs=6 uses=6,2,4,5,6,7,8,10 rn=6 regs=1524 wb=true psr=false | capstone stmdb r6!, {r2, r4, r5, r6, r7, r8, sl}
+    lemprog  00010bb0 e926eb30  68528 3911641904 stm cond=al pc=false plausible=true defs=6 uses=6,4,5,8,9,11,13,14,15 rn=6 regs=60208 wb=true psr=false | capstone stmdb r6!, {r4, r5, r8, sb, fp, sp, lr, pc}
+defs stm ours-only [3] capstone-only []                                1
+    galdan   00049f38 e923e912  302904 3911444754 stm cond=al pc=false plausible=true defs=3 uses=3,1,4,8,11,13,14,15 rn=3 regs=59666 wb=true psr=false | capstone stmdb r3!, {r1, r4, r8, fp, sp, lr, pc}
+defs mov ours-only [0] capstone-only []                                1
+    lemprog  00010208 c1a20001  66056 3248619521 dp cond=gt pc=false plausible=false defs=0 uses=1 op=mov s=false rd=0 rn=2 imm=- | capstone movgt r0, r1
+uses mov ours-only rs/stored capstone-only []                          1
+    lemprog  00010208 c1a20001  66056 3248619521 dp cond=gt pc=false plausible=false defs=0 uses=1 op=mov s=false rd=0 rn=2 imm=- | capstone movgt r0, r1

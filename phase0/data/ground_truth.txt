@@ -1,0 +1,53 @@
+runs: gd-headless gd-play0 gd-play1 gd-play2 lem-boot lem-level00 lem-level05 lem-level10 lem-level15 lem-level20 lem-level25
+
+galdan: 84156 words, 7867 executed (9.3%), 0 executed outside image
+             words    exec∩X    exec−X  X∩read−exec
+  B0_generic   14198      6997       870            1
+  B0_auto    14198      6997       870            1
+  B0         14198      6997       870            1
+  B1_auto    18678      7867         0          141
+  B1         18678      7867         0          141
+  B2         18704      7864         3          130
+  edges: 565 direct, 124 indirect sites (44 with >1 target), returns {'bl+4': 166, 'after-jump': 13, 'other': 2}
+  unexplained edges: 0
+  words executed after being written (SMC): 0
+
+lemprog: 36816 words, 5973 executed (16.2%), 0 executed outside image
+             words    exec∩X    exec−X  X∩read−exec
+  B0_generic      29        27      5946            2
+  B0_auto     8577      4777      1196            9
+  B0          8577      4777      1196            9
+  B1_generic    4445      3070      2903           84
+  B1_auto     9900      5972         1           42
+  B1          9900      5972         1           42
+  B2          9887      5961        12           41
+  edges: 907 direct, 200 indirect sites (64 with >1 target), returns {'bl+8': 206, 'push_pc+12': 298, 'bl+4': 41}
+  unexplained edges: 0
+  words executed after being written (SMC): 12
+
+lemboot: 1123 words, 552 executed (49.2%), 0 executed outside image
+             words    exec∩X    exec−X  X∩read−exec
+  B0_generic       9         9       543            0
+  B0_auto        9         9       543            0
+  B0           444       430       122           14
+  B1_generic     351       245       307          106
+  B1_auto      516       411       141          105
+  B1           654       552         0          102
+  B2           653       552         0          101
+  edges: 95 direct, 29 indirect sites (10 with >1 target), returns {'push_pc+12': 38, 'bl+4': 9, 'bl+8': 5}
+  unexplained edges: 0
+  words executed after being written (SMC): 441
+
+musmod: 3251 words, 1366 executed (42.0%), 0 executed outside image
+             words    exec∩X    exec−X  X∩read−exec
+  B0_generic     756       303      1063            2
+  B0_auto     1273       732       634           42
+  B0          2375      1366         0           42
+  B1_generic    2002      1089       277           15
+  B1_auto     2401      1299        67           55
+  B1          2533      1366         0           53
+  B2          2532      1366         0           52
+  edges: 185 direct, 65 indirect sites (30 with >1 target), returns {'push_pc+12': 26, 'after-jump': 4, 'bl+4': 80}
+  unexplained edges: 0
+  words executed after being written (SMC): 0
+
