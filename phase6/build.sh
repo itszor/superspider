@@ -1,7 +1,8 @@
 #!/bin/bash
 # Phase 6 mirror builds: both recompilations regenerated from SuperSpider's
 # analysis instead of the projects' spider + Ghidra + hand seeds. Everything
-# is written under phase6/build/; the game repositories are only read.
+# is written under phase6/build/; the game repositories are only read. The
+# builds link libroger (~/stuff/libroger, or $ROGER), as the projects do.
 set -e
 P6="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$P6")"
@@ -13,7 +14,7 @@ B="$P6/build"
 G="$HOME/games/galactic dan"
 D="$B/gd"
 mkdir -p "$D/recomp" "$D/ghidra/out"
-for f in Makefile runtime.c runtime.h os.h display.c sound.c vdu.c gen_c.py; do cp "$G/recomp/$f" "$D/recomp/"; done
+for f in Makefile game.c gen_c.py; do cp "$G/recomp/$f" "$D/recomp/"; done
 cp "$G"/ghidra/*.py "$D/ghidra/"
 ln -sfn "$G/extracted" "$D/extracted"
 : > "$D/ghidra/out/ghidra_only_code.txt"
@@ -26,9 +27,8 @@ python3 "$P6/ss_to_spider.py" "$D/ss.json" "$IMG" 8000 "$D/ghidra/galdan.json" "
 # --- Lemmings (LemProg, LemBoot, musmod2) ---------------------------------
 L="$HOME/games/lemmings"
 D="$B/lem"
-mkdir -p "$D/recomp/shaders" "$D/ghidra/out"
-for f in Makefile display.c gen_c.py os.h runtime.c runtime.h sound.c vdu.c; do cp "$L/recomp/$f" "$D/recomp/"; done
-cp "$L"/recomp/shaders/* "$D/recomp/shaders/"
+mkdir -p "$D/recomp" "$D/ghidra/out"
+for f in Makefile game.c gen_c.py; do cp "$L/recomp/$f" "$D/recomp/"; done
 cp "$L"/ghidra/*.py "$D/ghidra/"
 ln -sfn "$L/extracted" "$D/extracted"
 ln -sfn "$L/extracted_decompressed" "$D/extracted_decompressed"
