@@ -50,7 +50,9 @@ let add_data t a n why =
   go (a land lnot 3)
 
 let os_writes n = n land lnot 0x20000 = 0x01
-let noreturn_swi n = n = 0x11 || n = 0x2B
+(* OS_Exit (either form: XOS_Exit never returns either) and OS_GenerateError
+   (XOS_GenerateError returns with V set) *)
+let noreturn_swi n = n land lnot 0x20000 = 0x11 || n = 0x2B
 
 (* Trace one path from a, owned by function fn. *)
 let trace t a fn =

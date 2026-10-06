@@ -167,8 +167,11 @@ type state = { regs : v array; stack : v IM.t; amem : v IM.t; fields : v PM.t; f
 
 let field_default b k = match b with Reg0 r -> Sym (Load0 (r, k), 0) | _ -> Top
 
-let entry_state () =
-  { regs = Array.init 16 (fun r -> Sym (Reg0 r, 0)); stack = IM.empty; amem = IM.empty; fields = PM.empty;
+let entry_state ?consts () =
+  let reg r = match consts with
+    | Some (c : v array) when r < 13 && (match c.(r) with Consts _ -> true | _ -> false) -> c.(r)
+    | _ -> Sym (Reg0 r, 0) in
+  { regs = Array.init 16 reg; stack = IM.empty; amem = IM.empty; fields = PM.empty;
     fk = -1; cmp = None }
 
 let read_field st b k =
@@ -213,8 +216,27 @@ let join_state a b =
   { regs; stack; amem; fields; fk = (if a.fk = b.fk then a.fk else -1); cmp = (if a.cmp = b.cmp then a.cmp else None) }
 
 (* Widening: any value that changed goes to Top. *)
-let widen_state old j =
-  let w a b = if a = b then a else Top in
+(* A register that keeps changing goes to Top, except a pointer stepping
+   through the image (a loop walking records: ldr r8,[r7,#16]!): constants
+   or ranges in the image in arithmetic progression widen to a range with
+   that step, extended to the image's end in the direction it grows. *)
+let widen_v (img : Image.t) old j =
+  if old = j then old
+  else match to_range old, to_range j with
+    | Some (l1, h1, s1), Some (l2, h2, s2) ->
+      let step = gcd (gcd s1 s2) (abs (l1 - l2)) in
+      if step = 0 || not (Image.in_range img l1 && Image.in_range img h1) then Top
+      else
+        (* anchored on the old values; one more step may already have
+           gone past the image's end, which the widened range stops at *)
+        let first = img.base and last = img.base + img.size - 1 in
+        let lo = if l2 < l1 then l1 - (l1 - first) / step * step else l1 in
+        let hi = if h2 > h1 then h1 + (last - h1) / step * step else h1 in
+        mk_range lo hi step
+    | _ -> Top
+
+let widen_state img old j =
+  let w a b = if a = b then a else widen_v img a b in
   { regs = Array.init 16 (fun r -> w old.regs.(r) j.regs.(r));
     stack = IM.filter_map (fun off v ->
         match IM.find_opt off old.stack with
@@ -295,12 +317,36 @@ type t = {
   field_vals : (int, IS.t) Hashtbl.t;               (* field offset -> image addresses stored there *)
   field_users : (int, (int, unit) Hashtbl.t) Hashtbl.t;   (* field offset -> functions jumping through it *)
   sym_stores : (int, (int * v) list) Hashtbl.t;    (* function -> (variable, value relative to its entry) *)
+  entry_consts : (int, v array) Hashtbl.t;          (* function -> r0-r12 at every call site: a constant, or Top *)
+  roots : (int, unit) Hashtbl.t;                    (* entry points: called from outside the image *)
+  sp_restores : (int, int list) Hashtbl.t;          (* saved-SP variable -> ldr sp,[pc,#k] sites reading it *)
 }
 
 (* A copy loop: len bytes from src (inside the image) to dst, found at the
    loop's closing branch. Code that jumps into the destination runs the
    copy of the image there. *)
 and copy = { src : int; dst : int; len : int; loop_at : int }
+
+(* Saved stack pointers (setjmp/longjmp): str sp,[pc,#k] saves SP in a
+   variable; ldr sp,[pc,#k'] elsewhere, from the same variable, goes back
+   to that frame (and pops a return off it). Variable -> restore sites, for
+   variables some code saves SP in. *)
+let scan_sp_restores img =
+  let pcrel a (i : Arm2.t) ~load =
+    match i.kind with
+    | Arm2.Mem { load = l; byte = false; rd = 13; rn = 15; pre = true; up; off = Arm2.Off_imm n; _ }
+      when l = load && Arm2.plausible i && i.cond <> Arm2.NV ->
+      Some ((a + 8 + if up then n else -n) land lnot 3)
+    | _ -> None in
+  let saved = Hashtbl.create 8 and restores = Hashtbl.create 8 in
+  let each f = let a = ref img.Image.base in
+    while Image.inside img !a do f !a (Image.decode img !a); a := !a + 4 done in
+  each (fun a i -> match pcrel a i ~load:false with Some w -> Hashtbl.replace saved w () | None -> ());
+  each (fun a i -> match pcrel a i ~load:true with
+      | Some w when Hashtbl.mem saved w ->
+        Hashtbl.replace restores w (a :: Option.value (Hashtbl.find_opt restores w) ~default:[])
+      | _ -> ());
+  restores
 
 let scan_vars img =
   let vars = Hashtbl.create 64 in
@@ -321,6 +367,7 @@ let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   copies; var_known; var_stores = Hashtbl.create 64; var_loads = Hashtbl.create 64;
   code_writes = Hashtbl.create 64; data_reads = Hashtbl.create 1024; cur_site = 0; tables = Hashtbl.create 64; follow = Hashtbl.create 64;
   owner = Hashtbl.create 8192; linked = Hashtbl.create 64;
+  entry_consts = Hashtbl.create 256; roots = Hashtbl.create 16; sp_restores = scan_sp_restores img;
   fn_unresolved = Hashtbl.create 16; inlined = Hashtbl.create 16; fn_size = Hashtbl.create 256;
   img; vars = scan_vars img; summaries = Hashtbl.create 256; callers = Hashtbl.create 256;
   code = Hashtbl.create 8192; data = Hashtbl.create 1024; ret_sites = Hashtbl.create 1024;
@@ -462,15 +509,25 @@ let eval_dp st (i : Arm2.t) op rn op2 =
   | MOV -> b
   | MVN -> map_consts (fun c -> lnot c) b
   | ADD -> add_v (a ()) b
-  | SUB -> sub_v (a ()) b
+  | SUB -> (match a (), single b, i.kind with
+      | Range (lo, hi, step), Some c, Dp { s = true; _ } when lo < c && c <= hi ->
+        (* subs of a range reaching below the constant: the part that
+           doesn't borrow (the code tests the flags next: subs r7,r7,#n ;
+           addge pc,pc,r7,lsr #k) *)
+        let l = lo + (c - lo + step - 1) / step * step in
+        if l > hi then Top else mk_range (l - c) (hi - c) step
+      | va, _, _ -> sub_v va b)
   | RSB -> (match a (), single b with
       | Range (lo, hi, step), Some c when c >= hi -> mk_range (c - hi) (c - lo) step
       | va, _ -> map2_consts (fun x y -> y - x) va b)
   | AND -> (match a (), b with
       | (Sym _ as v), Consts s when IS.cardinal s = 1 && IS.choose s land addr_mask = addr_mask -> v
       | (Consts _ as va), vb -> map2_consts ( land ) va vb
-      | va, Consts s when IS.cardinal s = 1 && IS.choose s < 0x100000 ->
-        (* masking bounds the result *)
+      | va, Consts s when IS.cardinal s = 1
+                          && (IS.choose s < 0x100000
+                              || IS.choose s lsr trailing_zeros (IS.choose s) < max_enum) ->
+        (* masking bounds the result (a field higher up, and #&FF0000, too:
+           few multiples of its lowest bit) *)
         let m = IS.choose s in
         let hi = match va with Range (_, h, _) -> min m (pow2mask h) | _ -> m in
         (* low bits the mask clears are zero: the result steps by 2^tz *)
@@ -681,17 +738,20 @@ let cond_of_index = function
   | 12 -> Arm2.GT | 13 -> Arm2.LE | 14 -> Arm2.AL | _ -> Arm2.NV
 
 (* On a path where condition c is known to hold (or not), narrow the
-   register of the comparison that set the flags. Unsigned lower / lower-or-
+   register of the comparison that set the flags (imm -1: the flags of a
+   result, ands r7,r0,#k - only EQ says something, that it is 0). Unsigned lower / lower-or-
    same and equality bound it; the signed ones only when it is already known
-   to be a non-negative range. *)
-let refine st c holds =
+   to be a non-negative range, or for the index of a computed jump made on
+   that condition (cmp r0,#n ; addle pc,pc,r0,lsl #2 - a negative index
+   would land in the code before the table, so the program means 0..n). *)
+let refine ?(index = false) st c holds =
   match st.cmp with
   | None -> st
   | Some (r, imm) ->
     let c = if holds then c else cond_of_index (cond_index c lxor 1) in
     let cur = st.regs.(r) in
-    let nonneg = match cur with Range (_, h, _) -> h < 0x80000000 | _ -> false in
-    let bound = match c with
+    let nonneg = index || match cur with Range (_, h, _) -> h < 0x80000000 | _ -> false in
+    let bound = if imm < 0 then (if c = Arm2.EQ then Some (0, 0) else None) else match c with
       | Arm2.CC when imm > 0 -> Some (0, imm - 1)
       | Arm2.LS -> Some (0, imm)
       | Arm2.EQ -> Some (imm, imm)
@@ -762,6 +822,35 @@ let detect_copy_loop t head tail (entry : state) =
 
 let max_inline = 16
 
+(* --global-r12: the program keeps a workspace pointer in r12, the same
+   all through (Fervour's &51310, set at start and re-established by the
+   routines the OS calls). Then r12 is, at a function's entry, the
+   constant every call site passes, rather than symbolic: a path that
+   reloads it (add r12,pc,#k) joins the others instead of losing it, and
+   pointers into the workspace (records holding instructions) are known.
+   The join over all call sites found so far; a function is re-analysed
+   when it changes. Entry points (roots) are called from outside and stay
+   symbolic. Not the default: a program that uses r12 for
+   other things too, or keeps return addresses in its workspace (Twin
+   World), is misread - loads through it see the image's initial
+   contents. *)
+let global_r12 = ref false                (* --global-r12 *)
+
+let note_entry_consts t g (st : state) =
+  if !global_r12 && not (Hashtbl.mem t.roots g) then begin
+    let cur = Array.init 13 (fun r -> match st.regs.(r) with
+        | Consts s as v when IS.cardinal s = 1 && r = 12 -> v
+        | _ -> Top) in
+    let nw = match Hashtbl.find_opt t.entry_consts g with
+      | None -> cur
+      | Some old -> Array.init 13 (fun r -> if old.(r) = cur.(r) then old.(r) else Top) in
+    match Hashtbl.find_opt t.entry_consts g with
+    | Some old when old = nw -> ()
+    | prev ->
+      Hashtbl.replace t.entry_consts g nw;
+      if prev <> None && Hashtbl.mem t.analysed g then enqueue t g
+  end
+
 (* Analyse g now if it never has been (depth-first, so that a caller sees
    its callees' summaries in the same pass); re-analyse on demand otherwise. *)
 let rec ensure_analysed t g =
@@ -793,6 +882,7 @@ and update t g =
 
 and analyse_function t f =
   let img = t.img in
+
   let states : (int * int, state) Hashtbl.t = Hashtbl.create 256 in
   let visits : (int * int, int) Hashtbl.t = Hashtbl.create 256 in
   let first : (int, state) Hashtbl.t = Hashtbl.create 256 in     (* first state seen at an address *)
@@ -811,16 +901,23 @@ and analyse_function t f =
         if not (equal_state j old) then begin
           let n = 1 + Option.value (Hashtbl.find_opt visits key) ~default:0 in
           Hashtbl.replace visits key n;
-          let j = if n > widen_after then widen_state old j else j in
+          let j = if n > widen_after then widen_state img old j else j in
           Hashtbl.replace states key j; Queue.push key wl
         end
     end
   in
   (* Apply the summary of function target at site a (a bl, or a jump to a
      function entry: a tail transfer). *)
+  let applying = Hashtbl.create 16 in
   let rec apply_summary a st target =
+    (* a return into a function entry applies that function's summary in
+       turn; a cycle of such returns ends where it started *)
+    if Hashtbl.mem applying (a, target) then () else begin
+    Hashtbl.replace applying (a, target) ();
+    Fun.protect ~finally:(fun () -> Hashtbl.remove applying (a, target)) (fun () ->
     add_func t target;
     Hashtbl.replace (Hashtbl.find t.callers target) f ();
+    note_entry_consts t target st;
     ensure_analysed t target;
     List.iter (fun (w, v) -> note_store t ~f a (const w) (subst t st v) ~byte:false)
       (Option.value (Hashtbl.find_opt t.sym_stores target) ~default:[]);
@@ -839,7 +936,8 @@ and analyse_function t f =
         | Sym _ -> summary := add_exit !summary { pc = ret; st = st'; at = a }   (* tail exit *)
         | Range _ | Tab _ -> jump a st' ret                      (* e.g. through a caller's table *)
         | Top -> Hashtbl.replace t.unresolved a "return target unknown")
-      (Hashtbl.find t.summaries target)
+      (Hashtbl.find t.summaries target))
+    end
   (* Transfer control from a to target (not a call). A known function entry
      is entered through its summary. A target reached again with a different
      stack pointer, or different return addresses pushed in the frame, while
@@ -886,25 +984,51 @@ and analyse_function t f =
        let s = IS.map (fun c -> map_addr t (c land addr_mask)) s in
        add_set t.const_jumps a s;
        if IS.cardinal s > 1 then Hashtbl.replace t.tables a ("bounded", IS.cardinal s);
+       dispatched_calls a st s;
        IS.iter (fun c -> goto a c st) s
      | Sym _ -> summary := add_exit !summary { pc = v; st; at = a }
-     | Range (lo, hi, step) when not (unbounded v)
-                                && Image.inside img lo && Image.inside img hi && step land 3 = 0
+     | Range (lo, _, step) when not (unbounded v)
+                                && Image.inside img lo && step land 3 = 0
                                 && (match (Image.decode img a).kind with
                                     | Arm2.Dp { op = Arm2.ADD; rd = 15; op2 = Arm2.Reg _; _ } -> true
+                                    | Arm2.Dp { op = Arm2.ADD; rd = 15; rn; op2 = Arm2.Imm _; _ } -> rn <> 15
                                     | _ -> false) ->
-       (* only a computed jump (add pc, rN, rX...) can have a range of
-          targets: returns and pointers loaded into PC are single values *)
+       (* only a computed jump (add pc, rN, rX... or add pc, rN, #k with rN
+          stepping through records holding instructions) can have a range
+          of targets: returns and pointers loaded into PC are single values *)
        (* a range of code addresses (e.g. add pc,pc,rX,lsl #2); a range of
           small values (a byte loaded into PC) is not one. Targets must look
           like code: plausible, not data, not a word below &10000 (andeq
           r0,r0,<small> - table entries, zeros) *)
        (match elements v max_enum with
         | Some l ->
+          (* (a range widened to the image's end may reach just past it) *)
+          let l = List.filter (Image.inside img) l in
           let ok x =
             let i = Image.decode img x in
             Arm2.plausible i && i.cond <> Arm2.NV && Image.word img x >= 0x10000
             && not (Hashtbl.mem t.data x) in
+          (* a wide range (bounded by the index's type, e.g. a byte, not
+             by a guard) of entries that each end with an unconditional
+             transfer before the next one - a branch per word, or a few
+             instructions and a branch per 16 bytes (SoundMaster's effect
+             commands) - is a table of cases: it ends at the first entry
+             that isn't one (what follows is other code, entered with
+             other states) *)
+          let transfer x =
+            let i = Image.decode img x in
+            Arm2.always i && Arm2.writes_pc i
+            && (match i.kind with Arm2.Branch { link = true; _ } -> false | _ -> true) in
+          let case_block x =
+            let rec go a = a < x + step && Image.inside img a
+                           && Arm2.plausible (Image.decode img a)
+                           && (transfer a || go (a + 4)) in
+            go x in
+          let l = match List.sort compare l with
+            | x :: _ as l when List.length l > 64 && case_block x ->
+              let rec upto = function x :: r when case_block x -> x :: upto r | _ -> [] in
+              upto l
+            | l -> l in
           (match List.filter ok l with
            | [] -> unknown_jump a st
            | l' -> jump a st (Consts (IS.of_list l')))
@@ -940,9 +1064,46 @@ and analyse_function t f =
            ((match tb.limit with None -> "data-bounded (scanned)" | Some n -> Printf.sprintf "scanned, at most %d" n),
             IS.cardinal targets);
          add_set t.const_jumps a targets;
+         dispatched_calls a st targets;
          IS.iter (fun c -> goto a c st) targets
        end
      | Range _ | Top -> unknown_jump a st
+  (* A multi-way dispatch made with lr set to a return address: the last
+     instruction before it to write lr is add/sub lr,pc,#k or mov lr,pc
+     (sub lr,pc,#k ; cmp r0,#n ; addle pc,pc,r0,lsl #2 - a Wimp_Poll loop
+     calling a handler per event; lr holding data, or what a bl left there,
+     doesn't count). Each target, or the destination of the unconditional b
+     it holds, is a function, so that its return to lr comes back there
+     with the caller's state. *)
+  and dispatched_calls a st targets =
+    let sets_return =
+      let rec back k x =
+        k < 64 && Image.inside img x &&
+        (let i = Image.decode img x in
+         if List.mem 14 (Arm2.defs i) then
+           (match i.kind with
+            | Arm2.Dp { op = (Arm2.ADD | Arm2.SUB); rd = 14; rn = 15; op2 = Arm2.Imm _; _ } -> true
+            | Arm2.Dp { op = Arm2.MOV; rd = 14; op2 = Arm2.Reg (Arm2.Shift_imm (15, Arm2.LSL, 0)); _ } -> true
+            | _ -> false)
+         else back (k + 1) (x - 4)) in
+      back 0 (a - 4) in
+    match st.regs.(14) with
+    | Consts l when IS.cardinal l = 1 && IS.cardinal targets > 1 && sets_return ->
+      let r = IS.choose l land addr_mask in
+      if Image.inside img r && not (IS.mem r targets) then begin
+        if Sys.getenv_opt "SS_DEBUG_DC" <> None then
+          Printf.eprintf "dispatch in &%x, lr &%x: %s\n%!" f r
+            (String.concat " " (List.map (Printf.sprintf "&%x") (IS.elements targets)));
+        IS.iter (fun c ->
+            let i = Image.decode img c in
+            let c' = match i.kind with
+              | Arm2.Branch { link = false; target } when Arm2.always i -> map_addr t target
+              | _ -> c in
+            (* (not code just before the return point: what the
+               dispatch falls back into, not a handler) *)
+            if c' <> f && Image.inside img c' && not (c' >= r - 8 && c' <= r) then add_func t c') targets
+      end
+    | _ -> ()
   and unknown_jump a st =
        (match st.regs.(14), top_of_stack st with
         | Consts s, _ when IS.equal s (IS.singleton (a + 4)) ->
@@ -1105,6 +1266,12 @@ and analyse_function t f =
       if not (Hashtbl.mem t.owner a) then Hashtbl.replace t.owner a f;
       Hashtbl.remove t.data a;
       let next = a + 4 in
+      (* a self-modified word (stored to by pc-relative stores) holding a
+         transfer may be rewritten into an instruction that falls through
+         (FervourMode patches mov pc,lr into cmp r2,#mode): what follows
+         is code too *)
+      if Hashtbl.mem t.vars a && Arm2.always i && Arm2.writes_pc i then
+        goto a next { st with fk = -1; cmp = None };
       if i.cond = Arm2.NV then goto a next st
       else
         let run =
@@ -1115,7 +1282,12 @@ and analyse_function t f =
         if run then begin
         let st =
           if Arm2.always i then st
-          else refine { st with fk = fk_of i.cond true } i.cond true in
+          else
+            let index = match i.kind with
+              | Arm2.Dp { op = Arm2.ADD; rd = 15; rn = 15; op2 = Arm2.Reg (Arm2.Shift_imm (rm, _, _)); _ } ->
+                (match st.cmp with Some (r, _) -> r = rm | None -> false)
+              | _ -> false in
+            refine ~index { st with fk = fk_of i.cond true } i.cond true in
         let st = if sets_flags i then { st with fk = -1 } else st in
         (* comparison tracking: cmp rN,#imm (or a constant register) starts
            it; anything else that sets the flags or redefines rN ends it *)
@@ -1124,6 +1296,9 @@ and analyse_function t f =
             (match op2_val st i op2 with
              | Consts c when IS.cardinal c = 1 -> { st with cmp = Some (rn, IS.choose c) }
              | _ -> { st with cmp = None })
+          | Arm2.Dp { op; s = true; rd; _ }
+            when rd <> 15 && not (List.mem op Arm2.[ TST; TEQ; CMP; CMN ]) ->
+            { st with cmp = Some (rd, -1) }          (* Z: rd = 0 (see refine) *)
           | _ when sets_flags i -> { st with cmp = None }
           | _ -> (match st.cmp with
               | Some (r, _) when List.mem r (Arm2.defs i) -> { st with cmp = None }
@@ -1146,7 +1321,7 @@ and analyse_function t f =
               mark (x + 4) end in
           mark next;
           goto a after st
-        | Arm2.Swi n when n = 0x11 || n = 0x2B -> ()
+        | Arm2.Swi n when Spider.noreturn_swi n -> ()
         | Arm2.Swi n ->
           (match Riscos.args n with
            | Some regs ->
@@ -1219,7 +1394,23 @@ and analyse_function t f =
               | _ -> v in
             if rd = 15 then (if rn = 13 then pop_pc a st1 v else jump a st1 v)
             else goto a next (set_reg st1 rd v)
-          end else
+          end else begin
+            (* a saved stack pointer (this function's own: SP may also be
+               used as a data register and kept in a variable), to a
+               variable some ldr sp,[pc,#k] restores: this frame may later
+               be returned to from any of those restore sites, which go on
+               (pop a return...) as this function with its stack. (The
+               restore sites are also analysed where they are, with SP
+               unknown there.) *)
+            (match av, st.regs.(13) with
+             | Consts w, Sym (Reg0 13, _) when rd = 13 && not byte && IS.cardinal w = 1
+                                             && Hashtbl.mem t.sp_restores (IS.choose w) ->
+               let st' = { st with regs = Array.mapi (fun r v -> if r = 13 then v else Top) st.regs;
+                                   fk = -1; cmp = None } in
+               List.iter (fun r ->
+                   Hashtbl.replace t.code r ();
+                   propagate (r + 4) st') (Hashtbl.find t.sp_restores (IS.choose w))
+             | _ -> ());
             let v = if rd = 15 then const (a + 12) else st.regs.(rd) in
             if rn <> 13 && rd <> 15 && not byte then note_candidates t v a "stored";
             if rn <> 13 then note_store t ~f a av v ~byte;
@@ -1227,6 +1418,7 @@ and analyse_function t f =
              | Arm2.Off_imm n when rn <> 13 && rn <> 15 && pre && up && not byte -> record_field t n v
              | _ -> ());
             goto a next (store st1 ~base_reg:rn av (if byte then Top else v))
+          end
         | Arm2.Block { load; pre; up; wb; rn; regs; _ } ->
           let rl = Arm2.regs_of_mask regs in
           let n = List.length rl in
@@ -1239,6 +1431,18 @@ and analyse_function t f =
             let st1 = ref st and pcv = ref None in
             List.iteri (fun k r ->
                 let v = load_word t st (addr_of k) ~byte:false in
+                (* a PC loaded from a variable may also be its initial
+                   value (as for ldr pc): a context block reloaded with
+                   ldmia r0,{r0-r12,lr,pc} starts at the code it holds *)
+                let v = match v, addr_of k with
+                  | (Consts _ | Top), Consts w when r = 15 && IS.cardinal w = 1 ->
+                    (match initial_target t (IS.choose w), v with
+                     | [ c ], Consts s -> Consts (IS.add c s)
+                     | [ c ], _ ->
+                       Hashtbl.replace t.unresolved a "PC loaded from a variable: only its initial value known";
+                       const c
+                     | _ -> v)
+                  | _ -> v in
                 if r = 15 then pcv := Some v else st1 := set_reg !st1 r v) rl;
             let st1 = if wb then set_reg !st1 rn final else !st1 in
             match !pcv with
@@ -1258,7 +1462,7 @@ and analyse_function t f =
         end
     end
   in
-  propagate f (entry_state ());
+  propagate f (entry_state ?consts:(if Hashtbl.mem t.roots f then None else Hashtbl.find_opt t.entry_consts f) ());
   let steps = ref 0 in
   while not (Queue.is_empty wl) && !steps < 2_000_000 do
     incr steps;
@@ -1270,6 +1474,7 @@ and analyse_function t f =
   !summary
 
 let run t entries =
+  List.iter (fun e -> Hashtbl.replace t.roots e ()) entries;
   List.iter (add_func t) entries;
   let rounds = ref 0 in
   (* New functions first (most recent first), then callers whose callees'
@@ -1438,7 +1643,11 @@ let to_json t ~entries oc =
          let s = Hashtbl.find t.summaries f in
          Printf.sprintf "[%d,[%s]]" f
            (String.concat "," (List.map (fun e ->
-                Printf.sprintf "\"%s\"" (shape_of_exit e ^ " sp=" ^ string_of_v e.st.regs.(13))) s)))
+                (* r12 too when not preserved: a program's workspace
+                   pointer is usually kept there *)
+                let r12 = match e.st.regs.(12) with
+                  | Sym (Reg0 12, 0) -> "" | v -> " r12=" ^ string_of_v v in
+                Printf.sprintf "\"%s\"" (shape_of_exit e ^ " sp=" ^ string_of_v e.st.regs.(13) ^ r12)) s)))
        (keys t.summaries)));
   p "\"tables\":[%s],\n" (String.concat ","
     (List.map (fun a -> let how, n = Hashtbl.find t.tables a in Printf.sprintf "[%d,\"%s\",%d]" a how n)

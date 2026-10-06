@@ -4,7 +4,7 @@
        one line per word: address, word, decoded fields (for cross-checking
        the decoder against capstone; see phase2/crosscheck_decoder.py)
    superspider disasm IMAGE BASE [FROM [TO]]
-   superspider spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [-o OUT.json]
+   superspider spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [--global-r12] [-o OUT.json]
        S0 recursive descent.
    superspider s1 IMAGE BASE [same options]
        S1: return-address and stack abstract interpretation.
@@ -78,6 +78,7 @@ let () =
       | "--module" :: r -> opts entries out true r
       | "--entry" :: a :: r -> opts (int_of_hex a :: entries) out modl r
       | "--exec" :: a :: r -> exec := int_of_hex a; opts entries out modl r
+      | "--global-r12" :: r -> S1.global_r12 := true; opts entries out modl r
       | "-o" :: f :: r -> opts entries (Some f) modl r
       | [] -> List.rev entries, out, modl
       | x :: _ -> prerr_endline ("unknown option " ^ x); usage () in
@@ -113,7 +114,13 @@ let () =
       Printf.eprintf "code %d words, %d functions, %d data words, %d unresolved, %d assumed returns, %d balance assumptions, %d problems\n"
         (Hashtbl.length t.code) (Hashtbl.length t.funcs) (Hashtbl.length t.data)
         (Hashtbl.length t.unresolved) (Hashtbl.length t.assumed) (Hashtbl.length t.balanced)
-        (Hashtbl.length t.problems)
+        (Hashtbl.length t.problems);
+      (* SS_UNRESOLVED=1: each unresolved site, its function and why *)
+      if Sys.getenv_opt "SS_UNRESOLVED" <> None then
+        List.iter (fun (a, why) ->
+            Printf.eprintf "unresolved &%x (in &%x): %s\n" a
+              (Option.value (Hashtbl.find_opt t.owner a) ~default:0) why)
+          (List.sort compare (Hashtbl.fold (fun a w acc -> (a, w) :: acc) t.unresolved []))
     end;
     if out <> None then close_out oc
   | _ -> usage ()
