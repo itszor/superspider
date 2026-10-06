@@ -11,6 +11,11 @@ NOTES.md for the idea and PLAN.md for the evaluation plan and status.
   dune exec superspider -- s1b IMAGE BASE [same options]      (S1 + address-taken + relocation + tables: the full pipeline)
       --exec: an absolute file's execution address, when it isn't BASE (its load address)
       --global-r12: the program keeps a workspace pointer in r12 throughout (S1)
+      --roots FILE: more entry points, one address per line ('#' comments)
+  python3 tools/gap_roots.py IMAGE BASE ROOTS_FILE untranslated.log...
+      merge the gap entries a recompiled program's --trace-gaps run logged
+      (libroger) into a roots file, so the next analysis covers them:
+      analyse -> recompile -> run --trace-gaps -> gap_roots.py -> analyse ...
       SS_DEBUG=<function hex> / SS_DEBUG_ADDR=<addr hex> / SS_DEBUG_VAR=<variable hex> /
       SS_TRACE=1 for tracing
 
@@ -18,6 +23,7 @@ src/      arm2.ml decoder, image.ml images + module headers, spider.ml (S0),
           s1.ml (S1: return-address / stack abstract interpretation; S1b:
           address-taken entry points), riscos.ml (SWI argument kinds)
 bin/      command-line tool
+tools/    gap_roots.py: run-time gap entries -> roots for the next analysis
 test/     alcotest unit tests
 phase0/   ground truth (coverage of the recompiled games) and baselines;
           phase 1 census (PHASE1.md)

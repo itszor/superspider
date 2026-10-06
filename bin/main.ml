@@ -4,8 +4,13 @@
        one line per word: address, word, decoded fields (for cross-checking
        the decoder against capstone; see phase2/crosscheck_decoder.py)
    superspider disasm IMAGE BASE [FROM [TO]]
-   superspider spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [--global-r12] [-o OUT.json]
+   superspider spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [--roots FILE]...
+                      [--global-r12] [-o OUT.json]
        S0 recursive descent.
+       --roots FILE: more entry points, one address per line (blank lines and
+       anything after '#' ignored) - e.g. the gap entries a run of the
+       recompiled program found (tools/gap_roots.py), so each run's findings
+       feed the next analysis.
    superspider s1 IMAGE BASE [same options]
        S1: return-address and stack abstract interpretation.
    superspider s1b IMAGE BASE [same options]
@@ -20,6 +25,19 @@ let int_of_hex s =
   let s = if String.length s > 0 && s.[0] = '&' then "0x" ^ String.sub s 1 (String.length s - 1) else s in
   let s = if String.length s > 1 && (String.sub s 0 2 = "0x" || String.sub s 0 2 = "0X") then s else "0x" ^ s in
   int_of_string s
+
+(* A roots file: one address per line; '#' starts a comment. *)
+let read_roots path =
+  let ic = open_in path in
+  let rec go acc =
+    match input_line ic with
+    | exception End_of_file -> close_in ic; List.rev acc
+    | l ->
+      let l = match String.index_opt l '#' with Some k -> String.sub l 0 k | None -> l in
+      match String.split_on_char ' ' (String.trim l) |> List.filter (( <> ) "") with
+      | [] -> go acc
+      | a :: _ -> go (int_of_hex a :: acc) in
+  go []
 
 let usage () =
   prerr_endline "usage: superspider (decode|disasm|spider) IMAGE BASE [options]";
@@ -77,6 +95,7 @@ let () =
     let rec opts entries out modl = function
       | "--module" :: r -> opts entries out true r
       | "--entry" :: a :: r -> opts (int_of_hex a :: entries) out modl r
+      | "--roots" :: f :: r -> opts (List.rev_append (read_roots f) entries) out modl r
       | "--exec" :: a :: r -> exec := int_of_hex a; opts entries out modl r
       | "--global-r12" :: r -> S1.global_r12 := true; opts entries out modl r
       | "-o" :: f :: r -> opts entries (Some f) modl r
@@ -88,6 +107,7 @@ let () =
         List.map snd (Image.module_header_entries img)
         @ (if stage = "s1b" then List.map snd (Image.module_command_entries img) else [])
       else [ !exec ] in
+    let extra = List.sort_uniq compare (List.filter (fun e -> not (List.mem e given)) extra) in
     let entries = given @ extra in
     let oc = match out with Some f -> open_out f | None -> stdout in
     if stage = "spider" then begin
