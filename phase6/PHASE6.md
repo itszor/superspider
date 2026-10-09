@@ -5,15 +5,16 @@ Both recompilations rebuilt from SuperSpider's analysis alone, then run on
 the same 11 scripted sessions as phase 0.
 
   phase6/build.sh         mirror builds in phase6/build/{gd,lem}: copies of
-                          each project's recomp/ sources and ghidra/*.py
-                          (the game repositories are only read)
+                          each project's recomp/ sources (the game
+                          repositories are only read)
   phase6/ss_to_spider.py  SuperSpider s1b output -> a spider.Spider pickle
                           + the project's own export_ghidra.py JSON + a
                           functions.tsv; adds "ss_dispatch" (leaders)
-  phase6/patch_gen_c.py   patches the *copied* gen_c.py: dispatch leaders
-                          from ss_dispatch instead of every code word
-                          (Lemmings) / direct references only (Galactic
-                          Dan); Galactic Dan's dynamic facts not used
+  tools/gen_c.py --leaders=ss   dispatch leaders from ss_dispatch instead
+                          of every code word (Lemmings) / direct references
+                          only (Galactic Dan); Galactic Dan's dynamic facts
+                          not used (this was phase6/patch_gen_c.py, patching
+                          a copy of each project's gen_c.py)
   phase6/gaps.py, compare.py   results (gaps.txt, compare.txt)
   phase0/run_cov.py <session> --build=phase6   runs into phase0/runs6/
 
