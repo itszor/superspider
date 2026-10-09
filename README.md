@@ -21,7 +21,14 @@ tools/gap_roots.py). The core analysis always runs and always finishes
 quickly; everything else is turned on with --with (or all of it with
 --full, which is what the games use):
 
-  tables memory copies fields inline longjmp dispatch address-taken global-r12
+  tables memory copies fields inline longjmp dispatch clib address-taken global-r12
+
+clib is for C programs on the Shared C Library (AIF images linked with its
+stubs): the library's entry vectors, filled at run time, are calls that
+return; the start-up (_kernel_init, each language's Init, _main) and the
+function pointers the library is given (main, atexit, signal, qsort) are
+followed; and every APCS function entry in the image is an address-taken
+candidate.
 
 --budget N bounds the whole analysis (instruction steps, default 100M): when
 it runs out the result is marked incomplete, and code it didn't reach runs

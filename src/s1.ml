@@ -57,8 +57,10 @@ type base = Reg0 of int | Slot0 of int | Load0 of int * int
                          Only jumps make use of it. *)
 type v = Top | Consts of IS.t | Sym of base * int | Range of int * int * int | Tab of tab
        | Idx of tab * int * int * int | Obj of tab * int
-and tab = { tbase : int; more : int list; stride : int; tadd : int; limit : int option }
-(* limit: at most this many entries *)
+and tab = { tbase : int; more : int list; stride : int; tadd : int; limit : int option; tfield : int option }
+(* limit: at most this many entries; tfield: plus the word at field offset k
+   of some object (record_field's values) - a table of offsets from an
+   address the program keeps in its workspace, e.g. where it was loaded *)
 
 (* The mechanisms beyond the core analysis (summaries of returns and stack,
    constant jumps, OS_WriteS, the hand-linked call and stack balance
@@ -73,12 +75,13 @@ type features = {
   mutable longjmp : bool;         (* saved stack pointers restored elsewhere (setjmp/longjmp) *)
   mutable dispatch : bool;        (* multi-way dispatch with lr set: each target a function *)
   mutable global_r12 : bool;      (* r12 is a workspace pointer all through (see note_entry_consts) *)
+  mutable clib : bool;            (* calls into the Shared C Library's entry vectors (see lib_call) *)
 }
 
 let features = { tables = false; memory = false; copies = false; fields = false; inline = false;
-                 longjmp = false; dispatch = false; global_r12 = false }
+                 longjmp = false; dispatch = false; global_r12 = false; clib = false }
 
-let feature_names = [ "tables"; "memory"; "copies"; "fields"; "inline"; "longjmp"; "dispatch"; "global-r12" ]
+let feature_names = [ "tables"; "memory"; "copies"; "fields"; "inline"; "longjmp"; "dispatch"; "clib"; "global-r12" ]
 
 let set_feature name on =
   match name with
@@ -86,6 +89,7 @@ let set_feature name on =
   | "copies" -> features.copies <- on | "fields" -> features.fields <- on
   | "inline" -> features.inline <- on | "longjmp" -> features.longjmp <- on
   | "dispatch" -> features.dispatch <- on | "global-r12" -> features.global_r12 <- on
+  | "clib" -> features.clib <- on
   | _ -> invalid_arg name
 
 let set_full () = List.iter (fun n -> if n <> "global-r12" then set_feature n true) feature_names
@@ -94,7 +98,7 @@ let enabled_features () =
   List.filter (fun n -> match n with
       | "tables" -> features.tables | "memory" -> features.memory | "copies" -> features.copies
       | "fields" -> features.fields | "inline" -> features.inline | "longjmp" -> features.longjmp
-      | "dispatch" -> features.dispatch | _ -> features.global_r12) feature_names
+      | "dispatch" -> features.dispatch | "clib" -> features.clib | _ -> features.global_r12) feature_names
 
 (* A hard bound on the whole analysis: instructions stepped, over every
    function analysis, round and address-taken candidate. When it runs out
@@ -198,8 +202,9 @@ let string_of_v = function
   | Sym (Slot0 n, k) -> Printf.sprintf "[SP0%+d]%+d" n k
   | Sym (Load0 (r, n), k) -> Printf.sprintf "[r%d_0%+d]%+d" r n k
   | Range (lo, hi, step) -> Printf.sprintf "[&%x..&%x/%d]" lo hi step
-  | Tab t -> Printf.sprintf "tab(&%x%s+i*%d)%+d" t.tbase
+  | Tab t -> Printf.sprintf "tab(&%x%s+i*%d)%+d%s" t.tbase
                (String.concat "" (List.map (Printf.sprintf ",&%x") t.more)) t.stride t.tadd
+               (match t.tfield with Some k -> Printf.sprintf "+field(&%x)" k | None -> "")
   | Idx (t, lo, hi, step) -> Printf.sprintf "[tab(&%x+i*%d)%+d]+[&%x..&%x/%d]" t.tbase t.stride t.tadd lo hi step
   | Obj (t, k) -> Printf.sprintf "[tab(&%x+i*%d)%+d]%+d" t.tbase t.stride t.tadd k
 
@@ -398,6 +403,8 @@ type t = {
   sp_restores : (int, int list) Hashtbl.t;          (* saved-SP variable -> ldr sp,[pc,#k] sites reading it *)
   changes : (int, int) Hashtbl.t;                   (* function -> times its summary changed *)
   widened : (int, unit) Hashtbl.t;                  (* functions whose summary was widened *)
+  libvec : (int, int * int) Hashtbl.t;              (* C library vector word -> (chunk, entry) *)
+  lang_inits : (int, unit) Hashtbl.t;               (* C library language Init routines *)
 }
 
 (* A copy loop: len bytes from src (inside the image) to dst, found at the
@@ -441,6 +448,10 @@ let scan_vars img =
   done;
   vars
 
+(* The C library vector, once found: kept for the analyses that follow
+   (repeated rounds, address-taken candidates analysed on their own) *)
+let known_libvec : (int, int * int) Hashtbl.t = Hashtbl.create 256
+
 let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   copies; var_known; var_stores = Hashtbl.create 64; var_loads = Hashtbl.create 64;
   code_writes = Hashtbl.create 64; data_reads = Hashtbl.create 1024; cur_site = 0; tables = Hashtbl.create 64; follow = Hashtbl.create 64;
@@ -454,6 +465,7 @@ let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   analysed = Hashtbl.create 256; in_progress = Hashtbl.create 64;
   queued = Hashtbl.create 256; field_vals = Hashtbl.create 16; field_users = Hashtbl.create 16;
   sym_stores = Hashtbl.create 16; changes = Hashtbl.create 256; widened = Hashtbl.create 16;
+  libvec = Hashtbl.copy known_libvec; lang_inits = Hashtbl.create 4;
 }
 
 (* An address in the destination of a copy loop (and not in the image)
@@ -520,6 +532,42 @@ let add_func t f =
 let add_set tbl k s =
   Hashtbl.replace tbl k (IS.union s (Option.value (Hashtbl.find_opt tbl k) ~default:IS.empty))
 
+(* The Shared C Library (features.clib). A program linked with its stubs
+   calls SharedCLibrary_LibInitAPCS_A/R (SWI &80680/&80681) with r0
+   pointing to a list of chunk descriptors {id, vector start, vector end,
+   static data start, static data end}, ending with -1; the library fills
+   each vector - a word per library function, in the library's order - with
+   branches into itself. Those words are recorded here: a bl to one calls
+   the library (APCS: it returns, r0-r3, ip, lr and the flags changed), and
+   a b to the kernel's first entry, _kernel_init, with r0 a kernel init
+   block {image base, language descriptions, their end}, starts the
+   program: each language description's Init routine (at +16) is called,
+   and the code address it returns (the main program) run. Arguments that
+   are code addresses by the library's interface - the C library's _main's
+   main (entry 18, r1), atexit's (71, r0), qsort's comparison (76, r3),
+   signal's handler (128, r1) - are functions too. *)
+let note_libinit t st =
+  match st.regs.(0) with
+  | Consts s when IS.cardinal s = 1 ->
+    let rec chunk d =
+      if Image.inside t.img (d + 16) && Image.word t.img d <> 0xFFFFFFFF then begin
+        let id = Image.word t.img d and vs = Image.word t.img (d + 4) and ve = Image.word t.img (d + 8) in
+        if id >= 1 && id <= 2 && vs < ve && ve - vs < 0x1000 && Image.inside t.img vs then begin
+          let rec mark w k = if w < ve then begin
+              Hashtbl.replace t.libvec w (id, k);
+              Hashtbl.replace known_libvec w (id, k);
+              if not (Hashtbl.mem t.code w) then Hashtbl.replace t.data w "C library vector";
+              mark (w + 4) (k + 1) end in
+          mark vs 0
+        end;
+        for k = 0 to 4 do Hashtbl.replace t.data (d + 4 * k) "C library chunk list" done;
+        chunk (d + 20)
+      end in
+    chunk (IS.choose s)
+  | _ -> ()
+
+let lib_callbacks = [ (2, 18), 1; (2, 71), 0; (2, 76), 3; (2, 128), 1 ]
+
 (* Barrel shifter on known values (immediate amounts; rrx needs the carry). *)
 let shift_const sh n c =
   let open Arm2 in
@@ -568,11 +616,15 @@ let add_v a b =
   match a, b, single a, single b with
   | Sym (x, k), _, _, Some c | _, Sym (x, k), Some c, _ -> Sym (x, k + c)
   | (Range _ | Tab _ | Idx _ | Obj _), _, _, Some c -> add_k a c
+  | Tab tb, Sym (Load0 (r, k), c), _, _ | Sym (Load0 (r, k), c), Tab tb, _, _
+    when features.fields && tb.tfield = None && r < 13 ->
+    (* a table entry plus a field: ldr r0,[r5,r0] ; ldr r1,[r11,#k] ; add r0,r0,r1 *)
+    Tab { tb with tfield = Some k; tadd = tb.tadd + c }
   | _, (Range _ | Tab _ | Idx _ | Obj _), Some c, _ -> add_k b c
   | Range (l1, h1, s1), Range (l2, h2, s2), _, _ ->
     if h1 + h2 > m32 then Top else mk_range (l1 + l2) (h1 + h2) (gcd s1 s2)
   | Tab tb, Range (lo, hi, step), _, _ | Range (lo, hi, step), Tab tb, _, _
-    when features.tables && tb.more = [] && (match tb.limit with Some n -> n <= max_consts | None -> false) ->
+    when features.tables && tb.more = [] && tb.tfield = None && (match tb.limit with Some n -> n <= max_consts | None -> false) ->
     Idx (tb, lo, hi, step)
   | va, vb, _, _ -> map2_consts ( + ) va vb
 
@@ -745,7 +797,7 @@ let load_word t st av ~byte =
     end else if byte then Range (0, 255, 1) else Top
   | Range (lo, hi, step) when not byte && Image.inside t.img lo ->
     (* a loose bound (e.g. a byte index): only a limit for the content scan *)
-    Tab { tbase = lo; more = []; stride = step; tadd = 0;
+    Tab { tbase = lo; more = []; stride = step; tadd = 0; tfield = None;
           limit = if unbounded av then None else Some (range_count lo hi step) }
   | Idx (tb, lo, hi, step) when not byte && features.tables ->
     (* the entries of the first table are the bases of the second *)
@@ -762,8 +814,8 @@ let load_word t st av ~byte =
      | [] -> Top
      | b :: more ->
        let cnt = range_count 0 (hi - lo) step in
-       Tab { tbase = b; more; stride = step; tadd = 0; limit = if cnt > max_enum then None else Some cnt })
-  | Tab tb when not byte && features.tables -> Obj (tb, 0)
+       Tab { tbase = b; more; stride = step; tadd = 0; tfield = None; limit = if cnt > max_enum then None else Some cnt })
+  | Tab tb when not byte && features.tables && tb.tfield = None -> Obj (tb, 0)
   | _ -> if byte then Range (0, 255, 1) else Top
 
 (* Absolute-address memory is only tracked for stack traffic (base register
@@ -874,6 +926,12 @@ let refine ?(index = false) st c holds =
     | None -> st
     | Some (lo, hi) ->
       let nv = match cur with
+        | Consts _ when index && hi - lo < max_enum ->
+          (* the index of a guarded computed jump: every case up to the
+             guard is in the table, whatever values the analysis saw
+             stored (a variable's are an under-approximation: a zero-
+             initialised one's initial 0, stores in code not yet found) *)
+          mk_range lo hi 1
         | Consts s ->
           let s' = IS.filter (fun x -> x >= lo && x <= hi) s in
           if IS.is_empty s' then cur else Consts s'
@@ -1109,13 +1167,29 @@ and analyse_function t f =
      | Consts s, _ when IS.equal s (IS.singleton (a + 4)) -> Hashtbl.replace t.linked a ()
      | _ -> ());
     match v with
+     | Consts s when IS.for_all (fun c -> c land addr_mask = 0) s ->
+       (* only 0: a pointer not set yet (a variable's initial value), not
+          a target *)
+       unknown_jump a st
      | Consts s ->
+       let s = IS.filter (fun c -> c land addr_mask <> 0) s in
        let s = IS.map (fun c -> map_addr t (c land addr_mask)) s in
        add_set t.const_jumps a s;
        if IS.cardinal s > 1 then Hashtbl.replace t.tables a ("bounded", IS.cardinal s);
        dispatched_calls a st s;
        IS.iter (fun c -> goto a c st) s
-     | Sym _ -> summary := add_exit !summary { pc = v; st; at = a }
+     | Sym (Load0 _, _) when (match st.regs.(14) with
+                               | Consts s -> IS.equal s (IS.singleton (a + 4)) | _ -> false) ->
+       (* a hand-linked call through a pointer loaded from memory (ldr r1,
+          [r11,#k] ; add lr,pc,#0 ; mov pc,r1): a call, not a return, even
+          though the pointer is relative to the function's entry *)
+       unknown_jump a st
+     | Sym _ ->
+       if Hashtbl.mem t.lang_inits f then          (* the main program, which Init returns *)
+         (match st.regs.(0) with
+          | Consts s -> IS.iter (fun c -> if Image.inside img c && c land 3 = 0 then add_func t c) s
+          | _ -> ());
+       summary := add_exit !summary { pc = v; st; at = a }
      | (Range _ | Tab _) when not features.tables -> unknown_jump a st
      | Range (lo, _, step) when not (unbounded v)
                                 && Image.inside img lo && step land 3 = 0
@@ -1168,6 +1242,9 @@ and analyse_function t f =
           (at most max_consts entries) invalid entries (null slots) are
           skipped; otherwise the table ends at its first invalid entry *)
        let limit = Option.value tb.limit ~default:512 in
+       let adds = match tb.tfield with
+         | None -> [ tb.tadd ]
+         | Some k -> use_field k; List.map (fun v -> v + tb.tadd) (IS.elements (field_values k)) in
        let rec scan base k acc =
          let e = map_addr t (base + k * tb.stride) in
          if k >= limit || not (Image.inside img e) || Hashtbl.mem t.code e then acc
@@ -1177,11 +1254,11 @@ and analyse_function t f =
              | Some (Consts s) -> initial_target t e @ IS.elements s
              | Some _ -> initial_target t e       (* stored values unknown: still the one it starts with *)
              | None -> if Hashtbl.mem t.vars e then [] else [ Image.word img e ] in
-           let valid = List.filter_map (fun w ->
-               let target = map_addr t ((w + tb.tadd) land addr_mask) in
+           let valid = List.concat_map (fun add -> List.filter_map (fun w ->
+               let target = map_addr t ((w + add) land addr_mask) in
                if Image.inside img target && Arm2.plausible (Image.decode img target)
                   && (Image.decode img target).cond <> Arm2.NV && not (Hashtbl.mem t.data target)
-               then Some target else None) entry_vals in
+               then Some target else None) entry_vals) adds in
            if valid <> [] then begin
              Hashtbl.replace t.data e "jump table";
              scan base (k + 1) (List.fold_left (fun acc x -> IS.add x acc) acc valid)
@@ -1278,6 +1355,14 @@ and analyse_function t f =
             if c' <> f && Image.inside img c' && not (c' >= r - 8 && c' <= r) then add_func t c') targets
       end
     | _ -> ()
+  (* functions that jumped through field k are re-analysed when the values
+     stored there grow *)
+  and use_field k =
+    let us = match Hashtbl.find_opt t.field_users k with
+      | Some us -> us
+      | None -> let us = Hashtbl.create 4 in Hashtbl.replace t.field_users k us; us in
+    Hashtbl.replace us f ()
+  and field_values k = Option.value (Hashtbl.find_opt t.field_vals k) ~default:IS.empty
   and unknown_jump a st =
        (match st.regs.(14), top_of_stack st with
         | Consts s, _ when IS.equal s (IS.singleton (a + 4)) ->
@@ -1292,14 +1377,7 @@ and analyse_function t f =
           IS.iter (fun c -> add_set t.ret_sites a (IS.singleton (c land addr_mask));
                     goto a (c land addr_mask) st') rs
         | _ ->
-          (* functions that jumped through field k are re-analysed when
-             the values stored there grow *)
-          let use k =
-            let us = match Hashtbl.find_opt t.field_users k with
-              | Some us -> us
-              | None -> let us = Hashtbl.create 4 in Hashtbl.replace t.field_users k us; us in
-            Hashtbl.replace us f () in
-          let vals k = Option.value (Hashtbl.find_opt t.field_vals k) ~default:IS.empty in
+          let use = use_field and vals = field_values in
           let field_targets k c =
             use k;
             IS.filter code_target (IS.map (fun v -> map_addr t ((v + c) land addr_mask)) (vals k)) in
@@ -1478,6 +1556,34 @@ and analyse_function t f =
               | Some (r, _) when List.mem r (Arm2.defs i) -> { st with cmp = None }
               | _ -> st) in
         match i.kind with
+        | Arm2.Branch { link; target } when Hashtbl.mem t.libvec target ->
+          let id, k = Hashtbl.find t.libvec target in
+          List.iter (fun ((c, e), r) -> if (c, e) = (id, k) then
+                        match st.regs.(r) with
+                        | Consts s -> IS.iter (fun x -> if Image.inside img x && x land 3 = 0 then add_func t x) s
+                        | _ -> ()) lib_callbacks;
+          let st' = { (clobber st [ 0; 1; 2; 3; 12; 14 ]) with fk = -1; cmp = None } in
+          if link then goto a next st'
+          else if (id, k) = (1, 0) then begin           (* _kernel_init: the program starts *)
+            match st.regs.(0) with
+            | Consts s when IS.cardinal s = 1 && Image.inside img (IS.choose s + 8) ->
+              let blk = IS.choose s in
+              let le = Image.word img (blk + 8) in
+              let rec langs d =
+                if d < le && Image.inside img (d + 20) then begin
+                  let size = Image.word img d in
+                  let init = Image.word img (d + 16) in
+                  for w = 0 to (max size 20) / 4 - 1 do Hashtbl.replace t.data (d + 4 * w) "language description" done;
+                  if size > 16 && init <> 0 && Image.inside img init then begin
+                    Hashtbl.replace t.lang_inits init ();
+                    Hashtbl.replace t.roots init ();
+                    add_func t init
+                  end;
+                  if size >= 4 then langs (d + size)
+                end in
+              langs (Image.word img (blk + 4))
+            | _ -> Hashtbl.replace t.unresolved a "_kernel_init: init block unknown"
+          end else jump a st' st.regs.(14)              (* a tail call: the library returns to lr *)
         | Arm2.Branch { link = false; target } ->
           if features.copies && target <= a && a - target <= 64 && not (Arm2.always i) then
             (match Hashtbl.find_opt first target with
@@ -1495,6 +1601,9 @@ and analyse_function t f =
               mark (x + 4) end in
           mark next;
           goto a after st
+        | Arm2.Swi n when features.clib && (n land lnot 0x20000 = 0x80680 || n land lnot 0x20000 = 0x80681) ->
+          note_libinit t st;
+          goto a next (clobber st [ 0; 1; 2; 3; 4; 5; 6 ])
         | Arm2.Swi n when Spider.noreturn_swi n -> ()
         | Arm2.Swi n ->
           (match Riscos.args n with
@@ -1763,6 +1872,21 @@ let spider_with_address_taken img entries =
   let decided : (int, verdict) Hashtbl.t = Hashtbl.create 64 in
   let rec loop entries =
     let t = spider img entries in
+    (* a program linked with the C library: every Norcroft APCS function
+       entry (mov ip,sp ; stmdb sp!,{...fp,ip,lr,pc} ; sub fp,ip,#4) is a
+       candidate - C reaches functions through pointers passed as
+       arguments, stored in structures, ... *)
+    if features.clib && Hashtbl.length t.libvec > 0 then begin
+      let rec scan a =
+        if Image.inside img (a + 8) then begin
+          if Image.word img a = 0xE1A0C00D && Image.word img (a + 4) land 0xFFFFD800 = 0xE92DD800
+             && Image.word img (a + 8) = 0xE24CB004 && not (Hashtbl.mem t.code a) then
+            Hashtbl.replace t.cands a ((a, "APCS function entry code") ::
+                                       Option.value (Hashtbl.find_opt t.cands a) ~default:[]);
+          scan (a + 4)
+        end in
+      scan img.Image.base
+    end;
     let fresh = Hashtbl.fold (fun c _ acc ->
         if Hashtbl.mem decided c || Hashtbl.mem t.code c || Hashtbl.mem t.data c then acc else c :: acc)
         t.cands [] in
