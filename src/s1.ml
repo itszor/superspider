@@ -45,9 +45,20 @@ type base = Reg0 of int | Slot0 of int | Load0 of int * int
                          only known to be a multiple of step has hi = the
                          largest such 32-bit value ("unbounded")
    Tab t                 a word loaded from a table at t.tbase + i*t.stride
-                         for an unknown (or loosely bounded) i, plus t.tadd *)
+                         (or at each of t.more's bases) for an unknown (or
+                         loosely bounded) i, plus t.tadd
+   Idx (t, lo, hi, step) an address: a word from the small table t (at most
+                         max_consts entries, each the base of another
+                         table) plus lo, lo+step, ..., hi - a table of
+                         tables (ldr rT,[rT,rI,lsl #2] ; ldr rT,[rT,rJ,lsl #2])
+   Obj (t, k)            the word at offset t.tadd of each object a table of
+                         object pointers points to (t's entries), plus k:
+                         ldr r3,[r5,r7,lsl #2] ; ldr r4,[r3,#&14] ; mov pc,r4.
+                         Only jumps make use of it. *)
 type v = Top | Consts of IS.t | Sym of base * int | Range of int * int * int | Tab of tab
-and tab = { tbase : int; stride : int; tadd : int; limit : int option }   (* limit: at most this many entries *)
+       | Idx of tab * int * int * int | Obj of tab * int
+and tab = { tbase : int; more : int list; stride : int; tadd : int; limit : int option }
+(* limit: at most this many entries *)
 
 (* The mechanisms beyond the core analysis (summaries of returns and stack,
    constant jumps, OS_WriteS, the hand-linked call and stack balance
@@ -153,6 +164,8 @@ let add_k v k =
     else if hi + k > m32 then mk_range (lo + k) m32 step       (* stays unbounded *)
     else mk_range (lo + k) (hi + k) step
   | Tab t -> Tab { t with tadd = t.tadd + k }
+  | Idx (t, lo, hi, step) -> if lo + k < 0 then Top else Idx (t, lo + k, hi + k, step)
+  | Obj (t, j) -> Obj (t, j + k)
 
 (* Number of trailing zero bits of m (m > 0). *)
 let trailing_zeros m = let rec go k = if m land (1 lsl k) <> 0 || k >= 32 then k else go (k + 1) in go 0
@@ -185,7 +198,10 @@ let string_of_v = function
   | Sym (Slot0 n, k) -> Printf.sprintf "[SP0%+d]%+d" n k
   | Sym (Load0 (r, n), k) -> Printf.sprintf "[r%d_0%+d]%+d" r n k
   | Range (lo, hi, step) -> Printf.sprintf "[&%x..&%x/%d]" lo hi step
-  | Tab t -> Printf.sprintf "tab(&%x+i*%d)%+d" t.tbase t.stride t.tadd
+  | Tab t -> Printf.sprintf "tab(&%x%s+i*%d)%+d" t.tbase
+               (String.concat "" (List.map (Printf.sprintf ",&%x") t.more)) t.stride t.tadd
+  | Idx (t, lo, hi, step) -> Printf.sprintf "[tab(&%x+i*%d)%+d]+[&%x..&%x/%d]" t.tbase t.stride t.tadd lo hi step
+  | Obj (t, k) -> Printf.sprintf "[tab(&%x+i*%d)%+d]%+d" t.tbase t.stride t.tadd k
 
 (* ------------------------------------------------------------------ state *)
 
@@ -551,10 +567,13 @@ let single = function Consts s when IS.cardinal s = 1 -> Some (IS.choose s) | _ 
 let add_v a b =
   match a, b, single a, single b with
   | Sym (x, k), _, _, Some c | _, Sym (x, k), Some c, _ -> Sym (x, k + c)
-  | (Range _ | Tab _), _, _, Some c -> add_k a c
-  | _, (Range _ | Tab _), Some c, _ -> add_k b c
+  | (Range _ | Tab _ | Idx _ | Obj _), _, _, Some c -> add_k a c
+  | _, (Range _ | Tab _ | Idx _ | Obj _), Some c, _ -> add_k b c
   | Range (l1, h1, s1), Range (l2, h2, s2), _, _ ->
     if h1 + h2 > m32 then Top else mk_range (l1 + l2) (h1 + h2) (gcd s1 s2)
+  | Tab tb, Range (lo, hi, step), _, _ | Range (lo, hi, step), Tab tb, _, _
+    when features.tables && tb.more = [] && (match tb.limit with Some n -> n <= max_consts | None -> false) ->
+    Idx (tb, lo, hi, step)
   | va, vb, _, _ -> map2_consts ( + ) va vb
 
 let sub_v a b =
@@ -726,8 +745,25 @@ let load_word t st av ~byte =
     end else if byte then Range (0, 255, 1) else Top
   | Range (lo, hi, step) when not byte && Image.inside t.img lo ->
     (* a loose bound (e.g. a byte index): only a limit for the content scan *)
-    Tab { tbase = lo; stride = step; tadd = 0;
+    Tab { tbase = lo; more = []; stride = step; tadd = 0;
           limit = if unbounded av then None else Some (range_count lo hi step) }
+  | Idx (tb, lo, hi, step) when not byte && features.tables ->
+    (* the entries of the first table are the bases of the second *)
+    let n = Option.value tb.limit ~default:0 in
+    let bases = List.filter_map (fun k ->
+        let e = map_addr t (tb.tbase + k * tb.stride) in
+        if not (Image.inside t.img e) || Hashtbl.mem t.vars e then None
+        else begin
+          if not (Hashtbl.mem t.code e) then Hashtbl.replace t.data e "table";
+          let b = (Image.word t.img e + tb.tadd + lo) land m32 in
+          if Image.inside t.img b then Some b else None
+        end) (List.init n Fun.id) in
+    (match List.sort_uniq compare bases with
+     | [] -> Top
+     | b :: more ->
+       let cnt = range_count 0 (hi - lo) step in
+       Tab { tbase = b; more; stride = step; tadd = 0; limit = if cnt > max_enum then None else Some cnt })
+  | Tab tb when not byte && features.tables -> Obj (tb, 0)
   | _ -> if byte then Range (0, 255, 1) else Top
 
 (* Absolute-address memory is only tracked for stack traffic (base register
@@ -748,7 +784,7 @@ let set_reg st r v = let regs = Array.copy st.regs in regs.(r) <- v; { st with r
 (* Substitute the caller's state cs into a value relative to the callee's entry. *)
 let subst t cs = function
   | Top -> Top
-  | (Consts _ | Range _ | Tab _) as c -> c
+  | (Consts _ | Range _ | Tab _ | Idx _ | Obj _) as c -> c
   | Sym (Reg0 r, k) -> add_k cs.regs.(r) k
   | Sym (Slot0 n, k) ->
     (match cs.regs.(13) with
@@ -1027,7 +1063,7 @@ and analyse_function t f =
           add_set t.ret_sites a s;
           IS.iter (fun r -> goto a r st') s
         | Sym _ -> summary := add_exit !summary { pc = ret; st = st'; at = a }   (* tail exit *)
-        | Range _ | Tab _ -> jump a st' ret                      (* e.g. through a caller's table *)
+        | Range _ | Tab _ | Idx _ | Obj _ -> jump a st' ret        (* e.g. through a caller's table *)
         | Top -> Hashtbl.replace t.unresolved a "return target unknown")
       (Hashtbl.find t.summaries target))
     end
@@ -1132,14 +1168,14 @@ and analyse_function t f =
           (at most max_consts entries) invalid entries (null slots) are
           skipped; otherwise the table ends at its first invalid entry *)
        let limit = Option.value tb.limit ~default:512 in
-       let rec scan k acc =
-         let e = map_addr t (tb.tbase + k * tb.stride) in
+       let rec scan base k acc =
+         let e = map_addr t (base + k * tb.stride) in
          if k >= limit || not (Image.inside img e) || Hashtbl.mem t.code e then acc
          else
            (* an entry written at run time holds the values stored to it *)
            let entry_vals = match Hashtbl.find_opt t.var_known e with
              | Some (Consts s) -> initial_target t e @ IS.elements s
-             | Some _ -> []
+             | Some _ -> initial_target t e       (* stored values unknown: still the one it starts with *)
              | None -> if Hashtbl.mem t.vars e then [] else [ Image.word img e ] in
            let valid = List.filter_map (fun w ->
                let target = map_addr t ((w + tb.tadd) land addr_mask) in
@@ -1148,10 +1184,27 @@ and analyse_function t f =
                then Some target else None) entry_vals in
            if valid <> [] then begin
              Hashtbl.replace t.data e "jump table";
-             scan (k + 1) (List.fold_left (fun acc x -> IS.add x acc) acc valid)
-           end else if limit <= max_consts || Hashtbl.mem t.var_known e then scan (k + 1) acc
+             scan base (k + 1) (List.fold_left (fun acc x -> IS.add x acc) acc valid)
+           end else if limit <= max_consts || Hashtbl.mem t.var_known e then scan base (k + 1) acc
            else acc in
-       let targets = scan 0 IS.empty in
+       let targets = List.fold_left (fun acc b -> scan b 0 acc) IS.empty (tb.tbase :: tb.more) in
+       if Sys.getenv_opt "SS_DEBUG_ADDR" = Some (Printf.sprintf "%x" a) then
+         Printf.eprintf "table jump at &%x: %s -> %d targets (%s)\n%!" a (string_of_v v) (IS.cardinal targets)
+           (String.concat " " (List.map (fun b -> Printf.sprintf "&%x:%d" b (IS.cardinal (scan b 0 IS.empty)))
+                                 (tb.tbase :: tb.more)));
+       if Sys.getenv_opt "SS_DEBUG_ADDR" = Some (Printf.sprintf "%x" a) then
+         List.iter (fun b ->
+             let rec stop k =
+               let e = b + k * tb.stride in
+               if k >= limit then Printf.sprintf "limit %d" k
+               else if Hashtbl.mem t.code e then Printf.sprintf "entry &%x is code (k=%d)" e k
+               else
+                 let w = Image.word img e land addr_mask in
+                 if not (Image.inside img w) then Printf.sprintf "k=%d &%x outside" k w
+                 else if Hashtbl.mem t.data w then Printf.sprintf "k=%d target &%x is data (%s)" k w (Hashtbl.find t.data w)
+                 else if not (Arm2.plausible (Image.decode img w)) then Printf.sprintf "k=%d &%x implausible" k w
+                 else stop (k + 1) in
+             Printf.eprintf "  base &%x stops: %s\n%!" b (stop 0)) (tb.tbase :: tb.more);
        if IS.is_empty targets then unknown_jump a st
        else begin
          Hashtbl.replace t.tables a
@@ -1161,7 +1214,33 @@ and analyse_function t f =
          dispatched_calls a st targets;
          IS.iter (fun c -> goto a c st) targets
        end
-     | Range _ | Top -> unknown_jump a st
+     | Obj (tb, k) ->
+       (* the table's entries point to objects (in the image); the word at
+          offset tadd of each is a target. Unbounded, the table ends at its
+          first entry that isn't such a pointer *)
+       let limit = Option.value tb.limit ~default:512 in
+       let rec scan base i acc =
+         let e = map_addr t (base + i * tb.stride) in
+         if i >= limit || not (Image.inside img e) || Hashtbl.mem t.code e then acc
+         else
+           let ptr = if Hashtbl.mem t.vars e then None else Some (Image.word img e) in
+           match ptr with
+           | Some p when p land 3 = 0 && Image.inside img (p + tb.tadd) && not (Hashtbl.mem t.code p) ->
+             let f = p + tb.tadd in
+             let w = if Hashtbl.mem t.vars f then initial_target t f else [ Image.word img f ] in
+             let ts = List.filter code_target (List.map (fun w -> map_addr t ((w + k) land addr_mask)) w) in
+             if ts <> [] then Hashtbl.replace t.data e "object table";
+             scan base (i + 1) (List.fold_left (fun acc x -> IS.add x acc) acc ts)
+           | _ -> if limit <= max_consts then scan base (i + 1) acc else acc in
+       let targets = List.fold_left (fun acc b -> scan b 0 acc) IS.empty (tb.tbase :: tb.more) in
+       if IS.is_empty targets then unknown_jump a st
+       else begin
+         Hashtbl.replace t.tables a (Printf.sprintf "objects' field +&%x" tb.tadd, IS.cardinal targets);
+         add_set t.const_jumps a targets;
+         dispatched_calls a st targets;
+         IS.iter (fun c -> goto a c st) targets
+       end
+     | Range _ | Idx _ | Top -> unknown_jump a st
   (* A multi-way dispatch made with lr set to a return address: the last
      instruction before it to write lr is add/sub lr,pc,#k or mov lr,pc
      (sub lr,pc,#k ; cmp r0,#n ; addle pc,pc,r0,lsl #2 - a Wimp_Poll loop

@@ -310,6 +310,38 @@ let test_runaway_recursion () =
   S1.steps_taken := 0;
   S1.set_full ()
 
+(* A table of tables (Stunt Racer 2000's span plotters):
+     8000  and r1, r0, #1           a bounded index
+     8004  add r2, pc, #&18         &8024: the table of tables
+     8008  ldr r2, [r2, r1, lsl #2]  one of two tables
+     800c  ldr r3, [r2, r4, lsl #2] an unknown index into it
+     8010  mov pc, r3
+     8014  mov r0, #1 ; swi OS_Exit
+     801c  mov r0, #2 ; swi OS_Exit
+     8024  &802c, &8030             the tables: [&8014], [&801c] *)
+let test_table_of_tables () =
+  let img = image_of [ 0xE2001001; 0xE28F2018; 0xE7922101; 0xE7923104; 0xE1A0F003;
+                       0xE3A00001; 0xEF000011; 0xE3A00002; 0xEF000011; 0x802c; 0x8030; 0x8014; 0x801c; 0 ] in
+  let t = S1.spider img [ 0x8000 ] in
+  Alcotest.check ints "both tables' targets" [ 0x8014; 0x801c ]
+    (S1.IS.elements (Hashtbl.find t.const_jumps 0x8010))
+
+(* A jump through a field of objects a table points to:
+     8000  add r5, pc, #&14         &801c: the object table
+     8004  ldr r3, [r5, r7, lsl #2] an object
+     8008  ldr r4, [r3, #4]         its handler
+     800c  mov pc, r4
+     8010  mov r0, #1 ; swi OS_Exit the handler
+     8018  0
+     801c  &8024, 0                 the table: one object
+     8024  5, &8010                 the object *)
+let test_object_table_jump () =
+  let img = image_of [ 0xE28F5014; 0xE7953107; 0xE5934004; 0xE1A0F004; 0xE3A00001; 0xEF000011; 0;
+                       0x8024; 0; 5; 0x8010 ] in
+  let t = S1.spider img [ 0x8000 ] in
+  Alcotest.check ints "the object's handler" [ 0x8010 ]
+    (S1.IS.elements (Hashtbl.find t.const_jumps 0x800c))
+
 (* The C translation of a tiny image: a call, a return, OS_Exit. *)
 let test_gen () =
   let img = image_of [ 0xEB000001; 0xEF000011; 0xE1A00000; 0xE3A00001; 0xE1A0F00E ] in
@@ -344,5 +376,7 @@ let () =
                    Alcotest.test_case "s1 jump through a variable" `Quick test_variable_jump;
                    Alcotest.test_case "s1 variable set by a setter" `Quick test_setter_jump;
                    Alcotest.test_case "s1 table in an object" `Quick test_object_jump;
+                   Alcotest.test_case "s1 table of tables" `Quick test_table_of_tables;
+                   Alcotest.test_case "s1 jump through objects in a table" `Quick test_object_table_jump;
                    Alcotest.test_case "s1 recursion popping the caller's frame" `Quick test_runaway_recursion ]);
       ("gen", [ Alcotest.test_case "C for a tiny image" `Quick test_gen ]) ]
