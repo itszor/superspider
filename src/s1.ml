@@ -49,6 +49,50 @@ type base = Reg0 of int | Slot0 of int | Load0 of int * int
 type v = Top | Consts of IS.t | Sym of base * int | Range of int * int * int | Tab of tab
 and tab = { tbase : int; stride : int; tadd : int; limit : int option }   (* limit: at most this many entries *)
 
+(* The mechanisms beyond the core analysis (summaries of returns and stack,
+   constant jumps, OS_WriteS, the hand-linked call and stack balance
+   assumptions). Each can be turned on separately; the core alone always
+   finishes quickly. --full turns on all but global_r12 (what s1b did). *)
+type features = {
+  mutable tables : bool;          (* phase 4: bounded computed jumps, jump tables, tables of cases *)
+  mutable memory : bool;          (* phase 5: values carried in variables, over repeated rounds *)
+  mutable copies : bool;          (* phase 3c: code run from a copy made by a copy loop *)
+  mutable fields : bool;          (* jumps through fields of objects (handler objects, menus) *)
+  mutable inline : bool;          (* small dispatch stubs re-analysed inline at each call *)
+  mutable longjmp : bool;         (* saved stack pointers restored elsewhere (setjmp/longjmp) *)
+  mutable dispatch : bool;        (* multi-way dispatch with lr set: each target a function *)
+  mutable global_r12 : bool;      (* r12 is a workspace pointer all through (see note_entry_consts) *)
+}
+
+let features = { tables = false; memory = false; copies = false; fields = false; inline = false;
+                 longjmp = false; dispatch = false; global_r12 = false }
+
+let feature_names = [ "tables"; "memory"; "copies"; "fields"; "inline"; "longjmp"; "dispatch"; "global-r12" ]
+
+let set_feature name on =
+  match name with
+  | "tables" -> features.tables <- on | "memory" -> features.memory <- on
+  | "copies" -> features.copies <- on | "fields" -> features.fields <- on
+  | "inline" -> features.inline <- on | "longjmp" -> features.longjmp <- on
+  | "dispatch" -> features.dispatch <- on | "global-r12" -> features.global_r12 <- on
+  | _ -> invalid_arg name
+
+let set_full () = List.iter (fun n -> if n <> "global-r12" then set_feature n true) feature_names
+
+let enabled_features () =
+  List.filter (fun n -> match n with
+      | "tables" -> features.tables | "memory" -> features.memory | "copies" -> features.copies
+      | "fields" -> features.fields | "inline" -> features.inline | "longjmp" -> features.longjmp
+      | "dispatch" -> features.dispatch | _ -> features.global_r12) feature_names
+
+(* A hard bound on the whole analysis: instructions stepped, over every
+   function analysis, round and address-taken candidate. When it runs out
+   the analysis stops where it is and the result is incomplete (code it
+   didn't reach is interpreted at run time). *)
+let budget = ref max_int
+let steps_taken = ref 0
+let exhausted () = !steps_taken >= !budget
+
 let max_consts = 32
 let max_enum = 1024                 (* largest range / table enumerated *)
 let m32 = 0xFFFFFFFF
@@ -277,6 +321,22 @@ let shape_of_exit e =
   | Sym (Reg0 r, k) -> Printf.sprintf "r%d%+d" r k
   | v -> string_of_v v
 
+(* Widening a summary that keeps changing: an exit whose target the old
+   summary didn't have becomes an exit to an unknown target (callers count
+   it unresolved), and exit states are widened against the old ones. The
+   set of targets is then bounded by the old one, and states can only climb
+   a finite way. *)
+let summary_widen_after = ref 8
+
+let widen_summary img (old : summary) (s : summary) =
+  let s = List.fold_left (fun acc e ->
+      if List.exists (fun x -> x.pc = e.pc && x.st.fk = e.st.fk) old then add_exit acc e
+      else add_exit acc { e with pc = Top; st = { e.st with fk = -1 } }) [] s in
+  List.map (fun e ->
+      match List.find_opt (fun x -> x.pc = e.pc && x.st.fk = e.st.fk) old with
+      | Some o -> { e with st = widen_state img o.st (join_state o.st e.st) }
+      | None -> e) s
+
 (* ------------------------------------------------------------------ analysis *)
 
 type t = {
@@ -320,6 +380,8 @@ type t = {
   entry_consts : (int, v array) Hashtbl.t;          (* function -> r0-r12 at every call site: a constant, or Top *)
   roots : (int, unit) Hashtbl.t;                    (* entry points: called from outside the image *)
   sp_restores : (int, int list) Hashtbl.t;          (* saved-SP variable -> ldr sp,[pc,#k] sites reading it *)
+  changes : (int, int) Hashtbl.t;                   (* function -> times its summary changed *)
+  widened : (int, unit) Hashtbl.t;                  (* functions whose summary was widened *)
 }
 
 (* A copy loop: len bytes from src (inside the image) to dst, found at the
@@ -375,7 +437,7 @@ let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   problems = Hashtbl.create 64; funcs = Hashtbl.create 256; fresh = Stack.create (); work = Queue.create ();
   analysed = Hashtbl.create 256; in_progress = Hashtbl.create 64;
   queued = Hashtbl.create 256; field_vals = Hashtbl.create 16; field_users = Hashtbl.create 16;
-  sym_stores = Hashtbl.create 16;
+  sym_stores = Hashtbl.create 16; changes = Hashtbl.create 256; widened = Hashtbl.create 16;
 }
 
 (* An address in the destination of a copy loop (and not in the image)
@@ -413,12 +475,16 @@ let enqueue t f =
    from offset k of an unknown object (see field_jump) may go to any of
    them; functions that used field k are re-analysed when it grows. *)
 let record_field t k v =
+  if features.fields then
   match v with
   | Consts s when k >= 0 && k < 0x1000 ->
     let s = IS.filter (fun c -> c land 3 = 0 && Image.inside t.img c) s in
     let old = Option.value (Hashtbl.find_opt t.field_vals k) ~default:IS.empty in
     let nw = IS.union old s in
     if not (IS.equal nw old) then begin
+      if Sys.getenv_opt "SS_TRACE" <> None then
+        Printf.eprintf "field +&%x grows to %d values (%s)\n%!" k (IS.cardinal nw)
+          (String.concat " " (List.map (Printf.sprintf "&%x") (IS.elements (IS.diff nw old))));
       Hashtbl.replace t.field_vals k nw;
       match Hashtbl.find_opt t.field_users k with
       | Some us -> Hashtbl.iter (fun f () -> enqueue t f) us
@@ -585,15 +651,24 @@ let initial_target t w =
    self-modification). A value relative to f's entry (a setter storing its
    argument: str r0,[pc,#k]) is kept with f, and each call site stores
    that value substituted with its own state (see apply_summary). *)
+let max_sym_values = 8
+
 let note_store t ~f site av v ~byte =
   match av with
-  | Consts s when IS.cardinal s = 1 && not byte
+  | Consts s when IS.cardinal s = 1 && not byte && features.memory
                   && (match v with Sym (b, _) -> b <> Reg0 13 | _ -> false)
                   && Image.inside t.img (IS.choose s land lnot 3) ->
     let w = IS.choose s land lnot 3 in
     Hashtbl.replace t.code_writes w (site :: Option.value (Hashtbl.find_opt t.code_writes w) ~default:[]);
     let l = Option.value (Hashtbl.find_opt t.sym_stores f) ~default:[] in
-    if not (List.mem (w, v) l) then Hashtbl.replace t.sym_stores f ((w, v) :: l)
+    (* at most max_sym_values per variable, then it stores something
+       unknown (Top): values substituted from a recursion through the
+       caller's frame ([SP0+n] for ever larger n) would grow without end *)
+    let mine = List.filter (fun (w', _) -> w' = w) l in
+    if List.mem (w, Top) l || List.mem (w, v) l then ()
+    else if List.length mine >= max_sym_values then
+      Hashtbl.replace t.sym_stores f ((w, Top) :: List.filter (fun (w', _) -> w' <> w) l)
+    else Hashtbl.replace t.sym_stores f ((w, v) :: l)
   | Consts s when IS.cardinal s = 1 ->
     (* not mapped back through copies: a store into a copy changes the
        copy, not the image (the copy loop itself writes all of it) *)
@@ -638,6 +713,7 @@ let load_word t st av ~byte =
           | None -> image_word ~record:false t a ~byte in
         match acc with None -> Some v | Some x -> Some (join_v x v)) s None
     |> Option.value ~default:Top
+  | Range _ when not features.tables -> if byte then Range (0, 255, 1) else Top
   | Range (lo, hi, step) when byte && range_count lo hi step <= max_consts ->
     let addrs = List.init (range_count lo hi step) (fun k -> map_addr t (lo + k * step)) in
     if List.for_all (fun a -> Image.inside t.img (a land lnot 3) && not (Hashtbl.mem t.vars (a land lnot 3))) addrs
@@ -834,10 +910,9 @@ let max_inline = 16
    other things too, or keeps return addresses in its workspace (Twin
    World), is misread - loads through it see the image's initial
    contents. *)
-let global_r12 = ref false                (* --global-r12 *)
 
 let note_entry_consts t g (st : state) =
-  if !global_r12 && not (Hashtbl.mem t.roots g) then begin
+  if features.global_r12 && not (Hashtbl.mem t.roots g) then begin
     let cur = Array.init 13 (fun r -> match st.regs.(r) with
         | Consts s as v when IS.cardinal s = 1 && r = 12 -> v
         | _ -> Top) in
@@ -868,13 +943,30 @@ and update t g =
   let sym_before = nsym () in
   let s = analyse_function t g in
   Hashtbl.remove t.in_progress g;
+  if nsym () <> sym_before && Sys.getenv_opt "SS_TRACE" <> None then
+    Printf.eprintf "&%x symbolic stores %d -> %d: %s\n%!" g sym_before (nsym ())
+      (String.concat " " (List.map (fun (w, v) -> Printf.sprintf "&%x=%s" w (string_of_v v))
+                            (Option.value (Hashtbl.find_opt t.sym_stores g) ~default:[])));
   if nsym () <> sym_before then          (* new symbolic stores: the call sites substitute them *)
     Hashtbl.iter (fun c () -> if not (Hashtbl.mem t.in_progress c) then enqueue t c) (Hashtbl.find t.callers g);
   let old = Hashtbl.find t.summaries g in
+  (* A summary that keeps changing is widened (see widen_summary): a cycle
+     of functions whose paths pop ever more of the caller's frame (a
+     recursion through tail transfers) would otherwise grow without end. *)
+  let s =
+    if equal_summary s old then s
+    else begin
+      let n = 1 + Option.value (Hashtbl.find_opt t.changes g) ~default:0 in
+      Hashtbl.replace t.changes g n;
+      if n > !summary_widen_after then (Hashtbl.replace t.widened g (); widen_summary t.img old s) else s
+    end in
   if Sys.getenv_opt "SS_TRACE" <> None then
     Printf.eprintf "&%x exits %d -> %d%s\n%!" g (List.length old) (List.length s)
       (if equal_summary s old then "" else " CHANGED");
   if not (equal_summary s old) then begin
+    if Sys.getenv_opt "SS_EXITS" = Some (Printf.sprintf "%x" g) then
+      List.iter (fun e -> Printf.eprintf "  exit at &%x pc=%s fk=%d sp=%s\n" e.at (string_of_v e.pc) e.st.fk
+                    (string_of_v e.st.regs.(13))) s;
     Hashtbl.replace t.summaries g s;
     Hashtbl.iter (fun c () -> if not (Hashtbl.mem t.in_progress c) then enqueue t c)
       (Hashtbl.find t.callers g)
@@ -882,6 +974,7 @@ and update t g =
 
 and analyse_function t f =
   let img = t.img in
+  let t0 = Sys.time () in
 
   let states : (int * int, state) Hashtbl.t = Hashtbl.create 256 in
   let visits : (int * int, int) Hashtbl.t = Hashtbl.create 256 in
@@ -987,6 +1080,7 @@ and analyse_function t f =
        dispatched_calls a st s;
        IS.iter (fun c -> goto a c st) s
      | Sym _ -> summary := add_exit !summary { pc = v; st; at = a }
+     | (Range _ | Tab _) when not features.tables -> unknown_jump a st
      | Range (lo, _, step) when not (unbounded v)
                                 && Image.inside img lo && step land 3 = 0
                                 && (match (Image.decode img a).kind with
@@ -1076,6 +1170,7 @@ and analyse_function t f =
      it holds, is a function, so that its return to lr comes back there
      with the caller's state. *)
   and dispatched_calls a st targets =
+    if features.dispatch then
     let sets_return =
       let rec back k x =
         k < 64 && Image.inside img x &&
@@ -1129,7 +1224,7 @@ and analyse_function t f =
           let field_targets k c =
             use k;
             IS.filter code_target (IS.map (fun v -> map_addr t ((v + c) land addr_mask)) (vals k)) in
-          let how, targets = match field_jump a with
+          let how, targets = match (if features.fields then field_jump a else None) with
             | Some (`Object (k, None)) ->
               (* a table inside the objects stored at field k *)
               use k;
@@ -1235,7 +1330,7 @@ and analyse_function t f =
     let st = set_reg st 14 (const (a + 4)) in
     add_func t target;
     ensure_analysed t target;
-    if Hashtbl.mem t.fn_unresolved target && target <> f && not (Hashtbl.mem t.in_progress target)
+    if features.inline && Hashtbl.mem t.fn_unresolved target && target <> f && not (Hashtbl.mem t.in_progress target)
        && Option.value (Hashtbl.find_opt t.fn_size target) ~default:max_int <= max_inline
     then begin
       Hashtbl.replace t.inlined a ();
@@ -1305,7 +1400,7 @@ and analyse_function t f =
               | _ -> st) in
         match i.kind with
         | Arm2.Branch { link = false; target } ->
-          if target <= a && a - target <= 64 && not (Arm2.always i) then
+          if features.copies && target <= a && a - target <= 64 && not (Arm2.always i) then
             (match Hashtbl.find_opt first target with
              | Some entry -> detect_copy_loop t target a entry
              | None -> ());
@@ -1403,7 +1498,7 @@ and analyse_function t f =
                restore sites are also analysed where they are, with SP
                unknown there.) *)
             (match av, st.regs.(13) with
-             | Consts w, Sym (Reg0 13, _) when rd = 13 && not byte && IS.cardinal w = 1
+             | Consts w, Sym (Reg0 13, _) when features.longjmp && rd = 13 && not byte && IS.cardinal w = 1
                                              && Hashtbl.mem t.sp_restores (IS.choose w) ->
                let st' = { st with regs = Array.mapi (fun r v -> if r = 13 then v else Top) st.regs;
                                    fk = -1; cmp = None } in
@@ -1464,12 +1559,16 @@ and analyse_function t f =
   in
   propagate f (entry_state ?consts:(if Hashtbl.mem t.roots f then None else Hashtbl.find_opt t.entry_consts f) ());
   let steps = ref 0 in
-  while not (Queue.is_empty wl) && !steps < 2_000_000 do
+  while not (Queue.is_empty wl) && !steps < 2_000_000 && not (exhausted ()) do
     incr steps;
+    incr steps_taken;
     let key = Queue.pop wl in
     step (fst key) (Hashtbl.find states key)
   done;
   if !steps >= 2_000_000 then Hashtbl.replace t.problems f "analysis step limit";
+  if Sys.getenv_opt "SS_TRACE" <> None then
+    Printf.eprintf "&%x: %d steps, %d addresses, %d states, %.2fs\n%!" f !steps (Hashtbl.length first)
+      (Hashtbl.length states) (Sys.time () -. t0);
   Hashtbl.replace t.fn_size f (Hashtbl.length first);
   !summary
 
@@ -1479,7 +1578,8 @@ let run t entries =
   let rounds = ref 0 in
   (* New functions first (most recent first), then callers whose callees'
      summaries changed. *)
-  while (not (Stack.is_empty t.fresh) || not (Queue.is_empty t.work)) && !rounds < 100_000 do
+  while (not (Stack.is_empty t.fresh) || not (Queue.is_empty t.work)) && !rounds < 100_000
+        && not (exhausted ()) do
     incr rounds;
     if not (Stack.is_empty t.fresh) then begin
       let f = Stack.pop t.fresh in
@@ -1540,8 +1640,9 @@ let spider img entries =
     let t = create ~copies ~var_known:vars img in
     run t entries;
     let vars' = next_var_known t in
-    if n < 8 && (List.length t.copies > List.length copies || not (same_vars vars vars'))
-    then go t.copies vars' (n + 1) else t
+    if n < 8 && not (exhausted ())
+       && (List.length t.copies > List.length copies || (features.memory && not (same_vars vars vars')))
+    then go t.copies (if features.memory then vars' else Hashtbl.create 1) (n + 1) else t
   in
   go [] (Hashtbl.create 1) 0
 
@@ -1586,7 +1687,7 @@ let spider_with_address_taken img entries =
     let fresh = Hashtbl.fold (fun c _ acc ->
         if Hashtbl.mem decided c || Hashtbl.mem t.code c || Hashtbl.mem t.data c then acc else c :: acc)
         t.cands [] in
-    let accepted = List.filter (fun c ->
+    let accepted = List.filter (fun c -> not (exhausted ()) &&
         let ev = List.map snd (Hashtbl.find t.cands c) in
         (* an entry of an OS interface block (voice generator header...):
            certain, and often a single instruction (a branch, a return) *)
@@ -1612,7 +1713,7 @@ let spider_with_address_taken img entries =
           else Accepted in
         Hashtbl.replace decided c verdict;
         verdict = Accepted) (List.sort compare fresh) in
-    if accepted = [] then t else loop (entries @ accepted)
+    if accepted = [] || exhausted () then t else loop (entries @ accepted)
   in
   let t = loop entries in
   (t, decided)
@@ -1623,7 +1724,7 @@ let keys h = List.sort compare (Hashtbl.fold (fun k _ acc -> k :: acc) h [])
 
 let json_ints l = "[" ^ String.concat "," (List.map string_of_int l) ^ "]"
 
-let to_json t ~entries oc =
+let to_json ?(extra = []) t ~entries oc =
   let p fmt = Printf.fprintf oc fmt in
   p "{\"base\":%d,\"size\":%d,\n\"entries\":%s,\n\"funcs\":%s,\n\"code\":%s,\n\"data\":%s,\n"
     t.img.Image.base t.img.size (json_ints entries) (json_ints (keys t.funcs))
@@ -1680,11 +1781,13 @@ let to_json t ~entries oc =
   p "\"owner\":[%s],\n" (String.concat ","
     (List.map (fun a -> Printf.sprintf "[%d,%d]" a (Hashtbl.find t.owner a)) (keys t.owner)));
   p "\"linked\":%s,\n" (json_ints (keys t.linked));
+  p "\"widened\":%s,\n" (json_ints (keys t.widened));
   p "\"inlined_calls\":%s,\n" (json_ints (keys t.inlined));
   p "\"smc_values\":[%s],\n" (String.concat ","
     (List.filter_map (fun w -> match Hashtbl.find_opt t.var_stores w with
          | Some (Consts s) when Hashtbl.mem t.code w -> Some (Printf.sprintf "[%d,%s]" w (json_ints (IS.elements s)))
          | _ -> None) (keys t.var_stores)));
+  List.iter (fun (k, v) -> p "%s:%s,\n" (Json.quote k) v) extra;
   p "\"problems\":[%s]}\n" (String.concat ",\n"
-    (List.map (fun a -> Printf.sprintf "[%d,\"%s\"]" a (String.escaped (Hashtbl.find t.problems a)))
+    (List.map (fun a -> Printf.sprintf "[%d,%s]" a (Json.quote (Hashtbl.find t.problems a)))
        (keys t.problems)))

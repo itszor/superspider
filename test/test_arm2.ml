@@ -279,7 +279,58 @@ let test_object_jump () =
     (S1.IS.elements (Hashtbl.find t.const_jumps 0x8010));
   check_bool "object is not code" (not (Hashtbl.mem t.code 0x801c))
 
+(* Two functions that tail-call each other, each pass popping one more
+   word of the caller's frame - their summaries exit through caller slot
+   0, 4, 8, ... without end unless widened (Stunt Racer 2000 wedged on a
+   cycle like this). Must finish, in every configuration:
+     8000  bl &8010               f
+     8004  bl &8018               g
+     8008  swi OS_Exit
+     800c  mov r0, r0
+     8010  ldmia sp!, {r0}        f: pop a word, then on to g
+     8014  b &8018
+     8018  cmp r0, #0             g
+     801c  bne &8010              back to f
+     8020  ldmia sp!, {pc}        return through the frame *)
+let test_runaway_recursion () =
+  let img = image_of [ 0xEB000002; 0xEB000003; 0xEF000011; 0xE1A00000;
+                       0xE8BD0001; 0xEAFFFFFF; 0xE3500000; 0x1AFFFFFB; 0xE8BD8000 ] in
+  let saved = !S1.budget in
+  S1.budget := 1_000_000;
+  List.iter (fun full ->
+      List.iter (fun n -> S1.set_feature n false) S1.feature_names;
+      if full then S1.set_full ();
+      S1.steps_taken := 0;
+      let t = S1.spider img [ 0x8000 ] in
+      check_bool "finishes within the budget" (not (S1.exhausted ()));
+      check_bool "summaries stay small"
+        (Hashtbl.fold (fun _ s acc -> acc && List.length s <= 2 * !S1.summary_widen_after + 2) t.summaries true);
+      check_bool "g's return is found" (Hashtbl.mem t.code 0x8020)) [ false; true ];
+  S1.budget := saved;
+  S1.steps_taken := 0;
+  S1.set_full ()
+
+(* The C translation of a tiny image: a call, a return, OS_Exit. *)
+let test_gen () =
+  let img = image_of [ 0xEB000001; 0xEF000011; 0xE1A00000; 0xE3A00001; 0xE1A0F00E ] in
+  let t = S1.spider img [ 0x8000 ] in
+  let c = Gen.create Gen.default_options (Gen.of_s1 t ~entries:[ 0x8000 ]) ~data:img.data ~base:img.base in
+  let dir = Filename.concat (Filename.get_temp_dir_name ()) (Printf.sprintf "ssgen%d" (Unix.getpid ())) in
+  ignore (Gen.write c dir);
+  let read f = let ic = open_in_bin (Filename.concat dir f) in
+    let s = really_input_string ic (in_channel_length ic) in close_in ic; s in
+  let all = String.concat "" (List.init 16 (fun k -> read (Printf.sprintf "code%02d.c" k))) in
+  let has s sub = let n = String.length sub in
+    let rec go k = k + n <= String.length s && (String.sub s k n = sub || go (k + 1)) in go 0 in
+  check_bool "the call" (has all "CALL(F_800c, 0x800cu, 0x8004u);");
+  check_bool "the return" (has all "SETPC(R[14], 0);");
+  check_bool "OS_Exit" (has all "SWI(0x11u, 0x8008u);");
+  check_bool "an entry per code word" (has (read "entries.c") "const unsigned recomp_nentries = 4;");
+  check_bool "the image" (has (read "entries.c") "const struct roger_image recomp_image = {0x8000u, 0x8014u, recomp_entries, 4, recomp_codemap, 0};")
+
 let () =
+  (* the tests above exercise every mechanism *)
+  S1.set_full ();
   Alcotest.run "superspider"
     [ ("decode", [ Alcotest.test_case "text" `Quick test_text;
                    Alcotest.test_case "semantics" `Quick test_semantics;
@@ -292,4 +343,6 @@ let () =
                    Alcotest.test_case "s1 bounded tables" `Quick test_tables;
                    Alcotest.test_case "s1 jump through a variable" `Quick test_variable_jump;
                    Alcotest.test_case "s1 variable set by a setter" `Quick test_setter_jump;
-                   Alcotest.test_case "s1 table in an object" `Quick test_object_jump ]) ]
+                   Alcotest.test_case "s1 table in an object" `Quick test_object_jump;
+                   Alcotest.test_case "s1 recursion popping the caller's frame" `Quick test_runaway_recursion ]);
+      ("gen", [ Alcotest.test_case "C for a tiny image" `Quick test_gen ]) ]

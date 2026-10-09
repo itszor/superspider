@@ -3,27 +3,51 @@ SuperSpider
 
 Code/data separation for raw ARM2/ARM3 (26-bit, RISC OS) binaries. See
 NOTES.md for the idea and PLAN.md for the evaluation plan and status.
+PORTING.md is the process for porting a new game, from disc image to
+native binary, with the shared tools in tools/.
 
   dune build && dune test
-  dune exec superspider -- disasm IMAGE BASE [FROM [TO]]
-  dune exec superspider -- spider IMAGE BASE [--module] [--exec ADDR] [--entry ADDR]... [--global-r12] [-o OUT.json]   (S0)
-  dune exec superspider -- s1 IMAGE BASE [same options]       (S1)
-  dune exec superspider -- s1b IMAGE BASE [same options]      (S1 + address-taken + relocation + tables: the full pipeline)
-      --exec: an absolute file's execution address, when it isn't BASE (its load address)
-      --global-r12: the program keeps a workspace pointer in r12 throughout (S1)
-      --roots FILE: more entry points, one address per line ('#' comments)
+  superspider analyse IMAGE BASE [entry points] [mechanisms] [-o ANALYSIS.json] [--c DIR [C options]]
+  superspider gen IMAGE BASE ANALYSIS.json --c DIR [C options]
+  superspider disasm IMAGE BASE [FROM [TO]]
+  (superspider with no arguments lists every option; dune exec superspider -- ...
+  or _build/default/bin/main.exe)
+
+analyse finds the code and writes the analysis (-o, JSON) and/or its C
+translation (--c, code*.c + gen.h + entries.c for libroger); gen translates
+a saved analysis. Entry points: BASE (or --exec ADDR), the module header's
+with --module, --entry ADDR, --roots FILE (one address per line, e.g. from
+tools/gap_roots.py). The core analysis always runs and always finishes
+quickly; everything else is turned on with --with (or all of it with
+--full, which is what the games use):
+
+  tables memory copies fields inline longjmp dispatch address-taken global-r12
+
+--budget N bounds the whole analysis (instruction steps, default 100M): when
+it runs out the result is marked incomplete, and code it didn't reach runs
+interpreted. Summaries that keep changing are widened, so a recursion that
+pops ever more of its caller's frame (Stunt Racer 2000) can't grow forever.
+
   python3 tools/gap_roots.py IMAGE BASE ROOTS_FILE untranslated.log...
       merge the gap entries a recompiled program's --trace-gaps run logged
       (libroger) into a roots file, so the next analysis covers them:
       analyse -> recompile -> run --trace-gaps -> gap_roots.py -> analyse ...
-      SS_DEBUG=<function hex> / SS_DEBUG_ADDR=<addr hex> / SS_DEBUG_VAR=<variable hex> /
-      SS_TRACE=1 for tracing
+  SS_DEBUG=<function hex> / SS_DEBUG_ADDR=<addr hex> / SS_DEBUG_VAR=<variable hex> /
+  SS_EXITS=<function hex> (its summary each time it changes) / SS_TRACE=1
+  (each function analysis: steps, time, why things are re-analysed) for tracing
+
+The older stages (spider: S0; s1; s1b = analyse --full) still write their
+JSON for the phase scripts.
 
 src/      arm2.ml decoder, image.ml images + module headers, spider.ml (S0),
           s1.ml (S1: return-address / stack abstract interpretation; S1b:
-          address-taken entry points), riscos.ml (SWI argument kinds)
+          address-taken entry points), riscos.ml (SWI argument kinds),
+          gen.ml (the C translation), json.ml (reading saved analyses)
 bin/      command-line tool
-tools/    gap_roots.py: run-time gap entries -> roots for the next analysis
+tools/    the tools every game recompilation shares: disc/archive extraction,
+          gap_roots.py, bas2c.py (see PORTING.md); gen_c.py and the modules it
+          imports (spider.py, gen_asm.py, export_ghidra.py) only for the old
+          Ghidra-based analyses (Lemmings' and Galactic Dan's regen-ghidra)
 test/     alcotest unit tests
 phase0/   ground truth (coverage of the recompiled games) and baselines;
           phase 1 census (PHASE1.md)
