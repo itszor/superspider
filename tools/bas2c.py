@@ -14,6 +14,8 @@ Semantics kept from BASIC:
 - ON ERROR [LOCAL] handlers are setjmp points; an error longjmps to the
   current handler, which runs the rest of its line and carries on.
 - Every line sets bas_line (ERL, and for debugging).
+- GOTO n (and THEN n, ELSE n) is a C goto to a label on line n, so it
+  must stay within one PROC/FN (or the main program).
 Names: x% -> x_I, x -> x_R, x$ -> x_S; arrays x%() -> x_AI, x() -> x_AR,
 x$() -> x_AS; PROCx -> PROC_x, FNx -> FN_x; a backtick becomes _Q_.
 """
@@ -66,6 +68,9 @@ def lex(data):
                     j += 1
                 toks.append(Tok('str', s, num))
                 i = j + 1
+            elif c == 0x8D:                       # a line number (GOTO, THEN, RESTORE)
+                toks.append(Tok('num', str(detok.line_ref(b[i + 1:i + 4])), num))
+                i += 4
             elif c in EXT:
                 toks.append(Tok('kw', EXT[c].get(b[i + 1], '?'), num))
                 i += 2
@@ -147,6 +152,8 @@ class Trans:
         self.data = []
         self.funcs = []           # (name, kind, params, body lines, nlocals)
         self.calls = {}           # proc/fn name -> param types (from DEFs)
+        self.targets = goto_targets(toks)
+        self.cond_loops = set()   # loops opened inside an IF's branch
 
     # --- token helpers
     def peek(self, k=0):
@@ -276,7 +283,7 @@ class Trans:
             a, t = '%s(%s + %s)' % ('PK' if op == '!' else 'PB', self.toint(a, t), self.toint(b, bt)), 'i'
         return a, t
 
-    def unary(self):
+    def unary(self, noind=False):
         tok = self.next()
         k, v = tok.kind, tok.val
         if k == 'op' and v == '-':
@@ -302,16 +309,20 @@ class Trans:
         if k == 'str':
             return 's_(%s)' % cstr(v), 's'
         if k == 'id':
-            if self.at('op', '('):
-                return self.array_ref(v), vtype(v)
-            return self.use(v), vtype(v)
+            a, t = (self.array_ref(v) if self.at('op', '(') else self.use(v)), vtype(v)
+            # binary ! and ? are part of the variable: CHR$ A%!4 is CHR$(A%!4)
+            while not noind and (self.at('op', '!') or self.at('op', '?')):
+                op = self.next().val
+                b, bt = self.unary(True)
+                a, t = '%s(%s + %s)' % ('PK' if op == '!' else 'PB', self.toint(a, t), self.toint(b, bt)), 'i'
+            return a, t
         if k == 'kw':
             return self.kwfunc(v, tok)
         raise Fail('line %s: unexpected %r in expression' % (tok.line, tok))
 
     def factor_noind(self):
         """The operand of unary ! ? $: a variable, array element, number or bracket."""
-        return self.unary()
+        return self.unary(True)
 
     def kwfunc(self, v, tok):
         num1 = {'ABS': 'fabs', 'SIN': 'sin', 'COS': 'cos', 'SQR': 'sqrt', 'RAD': 'RADf', 'INT': 'floor',
@@ -389,6 +400,8 @@ class Trans:
             return 'time_get()', 'i'
         if v == 'TIME$':
             return 'time_s()', 's'
+        if v == 'PI':
+            return '3.141592653589793', 'r'
         if v == 'ERR':
             return 'bas_err', 'i'
         if v == 'ERL':
@@ -450,7 +463,8 @@ class Trans:
             if self.at('nl'):
                 if inline or self.peek().val is None or self.at('kw', 'DEF', 1):
                     return out
-                out.append('L(%d);' % self.next().val)
+                n = self.next().val
+                out.append(('l_%d: L(%d);' % (n, n)) if n in self.targets else 'L(%d);' % n)
                 continue
             if self.accept('op', ':'):
                 continue
@@ -539,18 +553,41 @@ class Trans:
         # may close one in either (or both)
         before = list(self.loops)
         block = bool(then_kw) and self.at('nl')    # (a crunched 'IF cond' alone does nothing)
-        then = self.block(('ELSE', 'ENDIF')) if block else self.block((), inline=True)
+        then = self.block(('ELSE', 'ENDIF')) if block else self.line_or_block()
         after_then, self.loops, els = self.loops, list(before), []
         if self.accept('kw', 'ELSE'):
-            els = self.block(('ENDIF',)) if block else self.block((), inline=True)
+            els = self.block(('ENDIF',)) if block else self.line_or_block()
         if block:
             self.expect('kw', 'ENDIF')
-        if after_then != before:                 # (IF c THEN REPEAT ... IF c THEN UNTIL x: Stunt Racer)
+        # a loop opened in a branch (IF c THEN REPEAT ... IF c THEN UNTIL x:
+        # Stunt Racer) stays open after it, and one closed in a branch is
+        # closed after it if it was opened in one; a loop opened
+        # unconditionally and NEXTed in a branch (IF c THEN NEXT, a
+        # 'continue': Chocks Away) stays open for the NEXT that follows
+        if len(after_then) > len(before):
+            self.cond_loops.update(l[1] for l in after_then[len(before):])
+            self.loops = after_then
+        elif len(after_then) < len(before) and all(l[1] in self.cond_loops for l in before[len(after_then):]):
             self.loops = after_then
         out = [cond + ' {'] + ['    ' + x for x in then]
         if els:
             out += ['} else {'] + ['    ' + x for x in els]
         return out + ['}']
+
+    def line_or_block(self):
+        """After THEN or ELSE on one line: a line number (GOTO it) or statements."""
+        if self.at('num') and self.stmt_end_at(1):
+            return ['goto l_%d;' % int(self.next().val)]
+        return self.block((), inline=True)
+
+    def stmt_end_at(self, k):
+        return self.at('nl', k=k) or self.at('op', ':', k) or self.at('kw', 'ELSE', k)
+
+    def s_GOTO(self):
+        # a label in the C function the line is in: a GOTO out of its
+        # PROC/FN doesn't compile (BASIC allows it, but this hasn't needed it)
+        tok = self.expect('num')
+        return ['goto l_%d;' % int(tok.val, 0)]
 
     def s_CASE(self):
         c, t = self.expr()
@@ -704,6 +741,9 @@ class Trans:
                 return out
 
     def s_RESTORE(self):
+        if self.at('num'):                    # RESTORE n: the first DATA item at or after line n
+            n = int(self.next().val, 0)
+            return ['data_p = %d;' % sum(len(split_data(t.val)) for t in self.t if t.kind == 'data' and t.line < n)]
         return ['data_p = 0;']
 
     def s_SWAP(self):
@@ -829,6 +869,30 @@ class Trans:
     def s_LINE(self):
         return ['line(%s, %s, %s, %s);' % tuple(self.nums(4))]
 
+    def s_REPORT(self):
+        return ['print_s(bas_report);']
+
+    def s_FILL(self):
+        return ['plot(133, %s, %s);' % tuple(self.nums(2))]
+
+    def s_POINT(self):
+        return ['plot(69, %s, %s);' % tuple(self.nums(2))]
+
+    def s_ELLIPSE(self):
+        # centre, then a point at the end of the (horizontal) major axis,
+        # then the top: PLOT 197 (outline) or 205 (filled)
+        fill = bool(self.accept('kw', 'FILL'))
+        x, y, a, b = self.nums(4)
+        if self.accept('op', ','):
+            raise Fail('line %s: ELLIPSE with an angle' % self.peek().line)
+        return ['plot(4, %s, %s); plot(4, (%s) + (%s), %s); plot(%d, %s, (%s) + (%s));'
+                % (x, y, x, a, y, 205 if fill else 197, x, y, b)]
+
+    def s_CIRCLE(self):
+        fill = bool(self.accept('kw', 'FILL'))
+        x, y, r = self.nums(3)
+        return ['plot(4, %s, %s); plot(%d, (%s) + (%s), %s);' % (x, y, 157 if fill else 149, x, r, y)]
+
     def s_RECTANGLE(self):
         fill = bool(self.accept('kw', 'FILL'))
         a = self.nums(3)
@@ -907,10 +971,11 @@ class Trans:
             return ['mouse_rect(%s, %s, %s, %s);' % tuple(self.nums(4))]
         if self.accept('kw', 'COLOUR'):
             return ['vdu(19, %s, 25, %s, %s, %s, -1);' % tuple(self.nums(4))]
-        if self.accept('kw', 'ON') or self.accept('kw', 'OFF'):
-            if not self.stmt_end():
-                self.expr()
-            return []
+        if self.accept('kw', 'ON'):              # the pointer: OS_Byte 106 (shape n, default 1)
+            n = '1' if self.stmt_end() else self.nums(1)[0]
+            return ['R[0] = 106; R[1] = %s; roger_swi(0x06);' % n]
+        if self.accept('kw', 'OFF'):
+            return ['R[0] = 106; R[1] = 0; roger_swi(0x06);']
         lv = [self.lvalue()]
         while self.accept('op', ','):
             lv.append(self.lvalue())
@@ -1021,6 +1086,15 @@ def generate(data):
         settled = tr.found_fn == fntypes
         fntypes = dict(tr.found_fn)
     return emit(tr, toks)
+
+
+def goto_targets(toks):
+    """Line numbers a GOTO, or a THEN/ELSE, names: they get C labels."""
+    t = set()
+    for k in range(len(toks) - 1):
+        if toks[k].kind == 'kw' and toks[k].val in ('GOTO', 'THEN', 'ELSE') and toks[k + 1].kind == 'num':
+            t.add(int(toks[k + 1].val, 0))
+    return t
 
 
 def scan_defs(toks):

@@ -398,6 +398,7 @@ type t = {
   field_vals : (int, IS.t) Hashtbl.t;               (* field offset -> image addresses stored there *)
   field_users : (int, (int, unit) Hashtbl.t) Hashtbl.t;   (* field offset -> functions jumping through it *)
   sym_stores : (int, (int * v) list) Hashtbl.t;    (* function -> (variable, value relative to its entry) *)
+  pc_slots : (int, unit) Hashtbl.t;                 (* words tracked in amem because stored PC-relative *)
   entry_consts : (int, v array) Hashtbl.t;          (* function -> r0-r12 at every call site: a constant, or Top *)
   roots : (int, unit) Hashtbl.t;                    (* entry points: called from outside the image *)
   sp_restores : (int, int list) Hashtbl.t;          (* saved-SP variable -> ldr sp,[pc,#k] sites reading it *)
@@ -454,7 +455,7 @@ let known_libvec : (int, int * int) Hashtbl.t = Hashtbl.create 256
 
 let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   copies; var_known; var_stores = Hashtbl.create 64; var_loads = Hashtbl.create 64;
-  code_writes = Hashtbl.create 64; data_reads = Hashtbl.create 1024; cur_site = 0; tables = Hashtbl.create 64; follow = Hashtbl.create 64;
+  code_writes = Hashtbl.create 64; pc_slots = Hashtbl.create 64; data_reads = Hashtbl.create 1024; cur_site = 0; tables = Hashtbl.create 64; follow = Hashtbl.create 64;
   owner = Hashtbl.create 8192; linked = Hashtbl.create 64;
   entry_consts = Hashtbl.create 256; roots = Hashtbl.create 16; sp_restores = scan_sp_restores img;
   fn_unresolved = Hashtbl.create 16; inlined = Hashtbl.create 16; fn_size = Hashtbl.create 256;
@@ -818,15 +819,27 @@ let load_word t st av ~byte =
   | Tab tb when not byte && features.tables && tb.tfield = None -> Obj (tb, 0)
   | _ -> if byte then Range (0, 255, 1) else Top
 
-(* Absolute-address memory is only tracked for stack traffic (base register
-   SP), i.e. a stack whose pointer is a known constant - not for the
-   program's global variables. *)
-let store st ~base_reg av v =
+(* Absolute-address memory is tracked for stack traffic (base register
+   SP), i.e. a stack whose pointer is a known constant, and (with the
+   memory mechanism) for words addressed PC-relative: a routine that keeps
+   its return address in a word of its own (str lr,[pc,#k] ... ldr lr,
+   [pc,#j] ; mov pc,lr: Chocks Away) returns through it. Not for the
+   program's other global variables; but a tracked word stored to again
+   through another register is updated (one constant address) or forgotten
+   (several). *)
+let store t st ~base_reg av v =
   match av with
   | Sym (Reg0 13, k) -> { st with stack = IM.add k v st.stack }
   | Sym (b, k) -> { st with fields = PM.add (b, k) v st.fields }
-  | Consts s when base_reg = 13 && IS.cardinal s = 1 ->
+  | Consts s when IS.cardinal s = 1
+                  && (base_reg = 13 || (base_reg = 15 && features.memory)
+                      || IM.mem (IS.choose s land lnot 3) st.amem) ->
+    if base_reg = 15 then Hashtbl.replace t.pc_slots (IS.choose s land lnot 3) ();
     { st with amem = IM.add (IS.choose s land lnot 3) v st.amem }
+  | Consts s when not (IM.is_empty st.amem) ->
+    { st with amem = IS.fold (fun a m -> if IM.mem (a land lnot 3) m then IM.add (a land lnot 3) Top m else m) s st.amem }
+  | Range (lo, hi, _) when not (IM.is_empty st.amem) ->
+    { st with amem = IM.mapi (fun a x -> if a >= (lo land lnot 3) && a <= hi then Top else x) st.amem }
   | _ -> st
 
 let clobber st regs = let r = Array.copy st.regs in List.iter (fun k -> r.(k) <- Top) regs; { st with regs = r }
@@ -869,7 +882,12 @@ let apply_exit t cs (e : exit_) =
      through a table to a routine that pops it) the callee's net push - the
      slots between its exit SP and its entry SP, for a descending or an
      ascending stack - is the frame the continuation pops. *)
-  let amem = IM.fold (fun a v m -> IM.add a (subst t cs v) m) e.st.amem cs.amem in
+  (* (a word the callee keeps PC-relative, e.g. its own return address, is
+     carried over only if the caller tracks it too: otherwise every
+     caller's summary would gather all its callees' words) *)
+  let amem = IM.fold (fun a v m ->
+      if Hashtbl.mem t.pc_slots a && not (IM.mem a cs.amem) then m else IM.add a (subst t cs v) m)
+      e.st.amem cs.amem in
   let lo, hi = match e.st.regs.(13) with Sym (Reg0 13, k) -> (min k 0, max k 0) | _ -> (0, 0) in
   let stack, amem = IM.fold (fun off v (stk, am) ->
       if off < lo || off >= hi then (stk, am) else
@@ -1700,7 +1718,7 @@ and analyse_function t f =
             (match off with
              | Arm2.Off_imm n when rn <> 13 && rn <> 15 && pre && up && not byte -> record_field t n v
              | _ -> ());
-            goto a next (store st1 ~base_reg:rn av (if byte then Top else v))
+            goto a next (store t st1 ~base_reg:rn av (if byte then Top else v))
           end
         | Arm2.Block { load; pre; up; wb; rn; regs; _ } ->
           let rl = Arm2.regs_of_mask regs in
@@ -1737,7 +1755,7 @@ and analyse_function t f =
                 let v = if r = 15 then const (a + 12) else st.regs.(r) in
                 if rn <> 13 && r <> 15 then note_candidates t v a "stored";
                 if rn <> 13 then note_store t ~f a (addr_of k) v ~byte:false;
-                st1 := store !st1 ~base_reg:rn (addr_of k) v) rl;
+                st1 := store t !st1 ~base_reg:rn (addr_of k) v) rl;
             goto a next (if wb then set_reg !st1 rn final else !st1)
           end
         | Arm2.Cop _ -> goto a next st

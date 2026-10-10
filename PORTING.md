@@ -1,8 +1,9 @@
 Porting a RISC OS game: from disc image to native binary
 ========================================================
 
-How the six recompilations so far were made: Galactic Dan, Lemmings, Twin
-World, Gyrinus II, Pushy II and Fervour (~/games/<name>). Each is a static
+How the recompilations so far were made: Galactic Dan, Lemmings, Twin
+World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
+Pac-Mania, Stunt Racer 2000 and Chocks Away. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -26,6 +27,8 @@ into a game.
                                      game's own unpacker (Lemmings' tools/unpack_lemboot.py)
     gap_roots.py                     run-time gaps -> roots for the next analysis
     bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on a game's bas.c runtime
+    cook.py identify|extract|build   recipes: recognise a user's discs (by content) and
+                                     build the game from them (see Recipes, below)
     gen_c.py, spider.py, gen_asm.py, the old Python recompiler and the modules it
     export_ghidra.py                 imports: only for the Ghidra-based analyses
                                      (Lemmings' and Galactic Dan's regen-ghidra)
@@ -226,6 +229,25 @@ Everything here is shared, so check the other games after any change:
 - After changing the C generation (src/gen.ml) or the other tools: run
   `make regen` in every game and diff the generated `recomp/gen*`
   directories against the previous ones. Then do the headless runs.
+
+Recipes
+-------
+
+A game repository is also a recipe: its committed files (game.c, the tools,
+roots, Makefile) plus a recipe.json are everything needed to rebuild the
+game from a user's own copy, and contain no game data, so the repository
+can be shared. recipe.json lists the discs it needs, each recognised by
+content - the sha256 of known images, and of the "key files" on the disc
+that the build depends on - and the build steps. `cook.py build INPUT...`
+finds the recipe the inputs match (any repository under ~/games, or
+$COOK_RECIPES), extracts the discs into it and runs the steps; a game's
+build.sh does the same for that recipe alone. A dump that matches only some
+key files (another release, a modified copy) scores below 100% and isn't
+built from. `cook.py index` writes recipes.json, every recipe's
+fingerprints in one file. Chocks Away is the first (~/games/chocks-away).
+
+Make the derived files (extracted/, game/, unpacked/, the generated C)
+.gitignored, and keep the original discs out of the repository.
 
 Layout of a game repository
 ---------------------------
