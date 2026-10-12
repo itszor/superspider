@@ -308,7 +308,11 @@ let widen_state img old j =
         | Some o when o = v -> Some v
         | _ -> None) j.stack;
     amem = IM.mapi (fun a v -> match IM.find_opt a old.amem with Some o when o = v -> v | _ -> Top) j.amem;
-    fields = PM.mapi (fun key v -> match PM.find_opt key old.fields with Some o when o = v -> v | _ -> Top) j.fields;
+    (* a field the old state didn't have is dropped, not made Top: the keys
+       stay bounded by the old ones (a cycle of functions storing a block
+       through r8 that steps 32 bytes on each pass: Zool's &26148) *)
+    fields = PM.filter_map (fun key v -> match PM.find_opt key old.fields with
+        | Some o when o = v -> Some v | Some _ -> Some Top | None -> None) j.fields;
     fk = j.fk; cmp = j.cmp }
 
 let widen_after = 4
@@ -403,6 +407,7 @@ type t = {
   roots : (int, unit) Hashtbl.t;                    (* entry points: called from outside the image *)
   sp_restores : (int, int list) Hashtbl.t;          (* saved-SP variable -> ldr sp,[pc,#k] sites reading it *)
   changes : (int, int) Hashtbl.t;                   (* function -> times its summary changed *)
+  previous : (int, summary) Hashtbl.t;              (* function -> its summary before the current one *)
   widened : (int, unit) Hashtbl.t;                  (* functions whose summary was widened *)
   libvec : (int, int * int) Hashtbl.t;              (* C library vector word -> (chunk, entry) *)
   lang_inits : (int, unit) Hashtbl.t;               (* C library language Init routines *)
@@ -465,7 +470,7 @@ let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
   problems = Hashtbl.create 64; funcs = Hashtbl.create 256; fresh = Stack.create (); work = Queue.create ();
   analysed = Hashtbl.create 256; in_progress = Hashtbl.create 64;
   queued = Hashtbl.create 256; field_vals = Hashtbl.create 16; field_users = Hashtbl.create 16;
-  sym_stores = Hashtbl.create 16; changes = Hashtbl.create 256; widened = Hashtbl.create 16;
+  sym_stores = Hashtbl.create 16; changes = Hashtbl.create 256; previous = Hashtbl.create 256; widened = Hashtbl.create 16;
   libvec = Hashtbl.copy known_libvec; lang_inits = Hashtbl.create 4;
 }
 
@@ -1064,13 +1069,19 @@ and update t g =
   let old = Hashtbl.find t.summaries g in
   (* A summary that keeps changing is widened (see widen_summary): a cycle
      of functions whose paths pop ever more of the caller's frame (a
-     recursion through tail transfers) would otherwise grow without end. *)
+     recursion through tail transfers) would otherwise grow without end.
+     One that changes back to what it was before the last change is
+     oscillating (functions whose summaries depend on each other's, one
+     path's state appearing and disappearing in turn: Zool's main loop,
+     whose analysis takes seconds): it is widened at once. *)
   let s =
     if equal_summary s old then s
     else begin
       let n = 1 + Option.value (Hashtbl.find_opt t.changes g) ~default:0 in
       Hashtbl.replace t.changes g n;
-      if n > !summary_widen_after then (Hashtbl.replace t.widened g (); widen_summary t.img old s) else s
+      let flips = match Hashtbl.find_opt t.previous g with Some p -> equal_summary s p | None -> false in
+      Hashtbl.replace t.previous g old;
+      if n > !summary_widen_after || flips then (Hashtbl.replace t.widened g (); widen_summary t.img old s) else s
     end in
   if Sys.getenv_opt "SS_TRACE" <> None then
     Printf.eprintf "&%x exits %d -> %d%s\n%!" g (List.length old) (List.length s)
@@ -1079,6 +1090,7 @@ and update t g =
     if Sys.getenv_opt "SS_EXITS" = Some (Printf.sprintf "%x" g) then
       List.iter (fun e -> Printf.eprintf "  exit at &%x pc=%s fk=%d sp=%s\n" e.at (string_of_v e.pc) e.st.fk
                     (string_of_v e.st.regs.(13))) s;
+    flush stderr;
     Hashtbl.replace t.summaries g s;
     Hashtbl.iter (fun c () -> if not (Hashtbl.mem t.in_progress c) then enqueue t c)
       (Hashtbl.find t.callers g)
@@ -1838,19 +1850,46 @@ let same_vars a b =
   Hashtbl.length a = Hashtbl.length b
   && Hashtbl.fold (fun k v acc -> acc && Hashtbl.find_opt b k = Some v) a true
 
+(* Variables whose values keep changing from round to round are widened to
+   Top for good, or the rounds go on to their limit (Zool, every round):
+   - one that goes back to the values it had two rounds before: its stores
+     depend on what the round knows of it (Zool's &25410: a constant one
+     round, Top the next);
+   - one that changes a second time with no value inside the image: a
+     counter, gaining a value every round (Zool's &b0fc: sub r0,r0,#1).
+   A variable holding addresses in the image is left to grow: code
+   pointers found round by round (Pushy II's dispatch variables). *)
+let widen_vars img changes before vars vars' =
+  let outside = function
+    | Some (Consts s) -> IS.for_all (fun a -> not (Image.inside img (a land lnot 3))) s
+    | _ -> true in
+  Hashtbl.iter (fun w v ->
+      if v = -1 then Hashtbl.replace vars' w Top
+      else if Hashtbl.find_opt vars w <> Hashtbl.find_opt vars' w then begin
+        let flips = Hashtbl.mem before w && Hashtbl.find_opt before w = Hashtbl.find_opt vars' w in
+        let counter = v >= 1 && outside (Hashtbl.find_opt vars w) && outside (Hashtbl.find_opt vars' w) in
+        if flips || counter then (Hashtbl.replace changes w (-1); Hashtbl.replace vars' w Top)
+        else Hashtbl.replace changes w (v + 1)
+      end) (Hashtbl.copy changes);
+  Hashtbl.iter (fun w _ ->
+      if not (Hashtbl.mem changes w) && Hashtbl.find_opt vars w <> Hashtbl.find_opt vars' w then
+        Hashtbl.replace changes w 1) (Hashtbl.copy vars')
+
 (* Copy loops and variable values are found during the analysis; the
    analysis is repeated with what the previous round found until neither
    changes. *)
 let spider img entries =
-  let rec go copies vars n =
+  let changes = Hashtbl.create 16 in
+  let rec go before copies vars n =
     let t = create ~copies ~var_known:vars img in
     run t entries;
     let vars' = next_var_known t in
+    widen_vars img changes before vars vars';
     if n < 8 && not (exhausted ())
        && (List.length t.copies > List.length copies || (features.memory && not (same_vars vars vars')))
-    then go t.copies (if features.memory then vars' else Hashtbl.create 1) (n + 1) else t
+    then go vars t.copies (if features.memory then vars' else Hashtbl.create 1) (n + 1) else t
   in
-  go [] (Hashtbl.create 1) 0
+  go (Hashtbl.create 1) [] (Hashtbl.create 1) 0
 
 (* Phase 3b: address-taken entry points. Code addresses passed to SWIs or
    stored to memory by code already found are candidates, with evidence:
