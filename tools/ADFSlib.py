@@ -106,7 +106,10 @@ class Utilities:
         return new
 
     @staticmethod
-    def _safe(s, with_space=0):
+    def _safe(s, with_space=0, eight_bit=False):
+        # eight_bit: the name's characters are 8-bit (D, E and F format
+        # directories keep attributes in a byte of their own); in S, M and L
+        # format ones bit 7 of the characters holds the attributes.
         if isinstance(s, str):
             s = s.encode('iso-8859-1')
 
@@ -120,13 +123,14 @@ class Utilities:
             lower = 32
 
         # Loop through the input string until we find a terminator character
+        mask = 0xFF if eight_bit else 0x7F
         for index, byte_val in enumerate(s):
-            if (byte_val & 0x7F) <= lower:
+            if (byte_val & mask) <= lower:
                 # Invalid byte
                 break
             else:
                 # Valid byte
-                filename_bytes.append(byte_val & 0x7F)
+                filename_bytes.append(byte_val & mask)
 
         return filename_bytes.decode('iso-8859-1')
 
@@ -584,7 +588,7 @@ class ADFSnewMap(ADFSmap):
                     top_set = counter
                 counter = counter + 1
 
-            name = self._safe(self.sectors[head + p:head + p + 10])
+            name = self._safe(self.sectors[head + p:head + p + 10], eight_bit=True)
 
             load = self._read_unsigned_word(self.sectors[head + p + 10:head + p + 14])
             exe = self._read_unsigned_word(self.sectors[head + p + 14:head + p + 18])
@@ -1282,7 +1286,8 @@ class ADFSdisc(Utilities):
                 if (v & 128) != 0:
                     top_set[i] = 1
 
-            name = self._safe(self.sectors[head + p:head + p + 10])
+            name = self._safe(self.sectors[head + p:head + p + 10],
+                              eight_bit=self.disc_type == 'adD')
 
             load = self._read_unsigned_word(self.sectors[head + p + 10:head + p + 14])
             exe = self._read_unsigned_word(self.sectors[head + p + 14:head + p + 18])

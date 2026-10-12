@@ -42,7 +42,12 @@ recipe.json:
                           disc: sha256}, game_dirs [directories copied to
                           game/, merged with any of the same name from an
                           earlier disc; "$" copies the whole disc into game/],
-                          optional (true: not needed)
+                          optional (true: not needed), alternatives [discs:
+                          other releases that serve as this one, each with
+                          its own name, title, images, key_files and
+                          game_dirs]
+  (the disc or alternative matched is extracted to extracted/<its name>,
+  so a build step can tell which one it has)
   build[]                 shell commands run in the recipe directory, in
                           order; "INPUTS" stands for the input files and
                           $WEAVE for this script
@@ -231,20 +236,29 @@ class Disc:
         return (n, known, self.clean)
 
 
+def forms(disc):
+    """a recipe's disc and its alternatives"""
+    return [disc] + disc.get('alternatives', [])
+
+
 def match(recipe, discs):
-    """the best input disc for each of the recipe's discs, and the recipe's score
-    (0..1: the fraction of required key files found)"""
+    """the best input disc for each of the recipe's discs - (score, input disc,
+    the form it matched: the disc or one of its alternatives) - and the
+    recipe's score (0..1: the fraction of required key files found)"""
     best, want, got = {}, 0, 0
     for disc in recipe['discs']:
-        need = max(1, len(disc.get('key_files', {})))
-        cands = [(d.score(disc), d) for d in discs]
-        cands = [c for c in cands if c[0][0] > 0]
+        cands = []
+        for form in forms(disc):
+            need = max(1, len(form.get('key_files', {})))
+            cands += [((s[0] / need,) + s, d, form) for d in discs
+                      for s in [d.score(form)] if s[0] > 0]
         if cands:
-            s, d = max(cands, key=lambda c: c[0])
-            best[disc['name']] = (s, d)
+            c = max(cands, key=lambda c: c[0])
+            best[disc['name']] = (c[0][1:], c[1], c[2])
         if disc.get('optional'):
             continue
-        want += need
+        form = best[disc['name']][2] if disc['name'] in best else disc
+        want += max(1, len(form.get('key_files', {})))
         got += best[disc['name']][0][0] if disc['name'] in best else 0
     return best, (got / want if want else 0)
 
@@ -264,10 +278,11 @@ def identify(inputs, tmp, quiet=False):
             print('%3d%%  %s  (%s)%s' % (round(score * 100), r['name'], r['title'], '  [known container]' if exact else ''))
             for disc in r['discs']:
                 if disc['name'] in best:
-                    (n, known, clean), d = best[disc['name']]
-                    kf = len(disc.get('key_files', {}))
-                    print('        %-6s <- %s (%s%s%s)' % (
-                        disc['name'], d.name, '%d/%d key files' % (n, kf) if kf else 'by image',
+                    (n, known, clean), d, form = best[disc['name']]
+                    kf = len(form.get('key_files', {}))
+                    print('        %-6s <- %s (%s%s%s%s)' % (
+                        disc['name'], d.name, '' if form is disc else 'as %s: ' % form['name'],
+                        '%d/%d key files' % (n, kf) if kf else 'by image',
                         ', known image' if known else '', '' if clean else ', extracted with errors'))
                 elif not disc.get('optional'):
                     print('        %-6s missing: %s' % (disc['name'], disc['title']))
@@ -282,23 +297,28 @@ def extract(rdir, inputs):
     try:
         discs = [Disc(n, p, c, tmp) for n, p, c in images_in(inputs, tmp)]
         best, score = match(r, discs)
+        got = {}
         for disc in r['discs']:
-            full = disc['name'] in best and best[disc['name']][0][0] >= len(disc.get('key_files', {}))
+            for form in forms(disc):
+                shutil.rmtree(os.path.join(rdir, 'extracted', form['name']), ignore_errors=True)
+            full = False
+            if disc['name'] in best:
+                (n, _, _), d, form = best[disc['name']]
+                full = n >= len(form.get('key_files', {}))
             if not full:
                 if disc.get('optional'):
                     continue
                 sys.exit('weave: no complete dump of %s (%s) among the inputs' % (disc['name'], disc['title']))
-            d = best[disc['name']][1]
-            print('%s: %s' % (disc['name'], d.name))
-            dst = os.path.join(rdir, 'extracted', disc['name'])
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(d.tree, dst)
+            print('%s: %s%s' % (disc['name'], d.name, '' if form is disc else ' (as %s)' % form['name']))
+            shutil.copytree(d.tree, os.path.join(rdir, 'extracted', form['name']))
+            got[disc['name']] = form
         game = os.path.join(rdir, 'game')
         shutil.rmtree(game, ignore_errors=True)
         os.makedirs(game)
         for disc in r['discs']:
-            for gd in disc.get('game_dirs', []):
-                tree = os.path.join(rdir, 'extracted', disc['name'])
+            form = got.get(disc['name'], {})
+            for gd in form.get('game_dirs', []):
+                tree = os.path.join(rdir, 'extracted', form['name'])
                 if gd == '$':               # the whole disc, at the top of game/
                     shutil.copytree(tree, game, dirs_exist_ok=True)
                     continue
@@ -339,10 +359,11 @@ def index():
         for n, h in r.get('inputs', {}).get('containers', {}).items():
             idx['containers'][h] = r['name']
         for disc in r['discs']:
-            for h in disc.get('known_images', []) + disc.get('variant_images', []):
-                idx['images'][h] = '%s/%s' % (r['name'], disc['name'])
-            for rel, h in disc.get('key_files', {}).items():
-                idx['key_files'].setdefault(h, []).append('%s/%s/%s' % (r['name'], disc['name'], rel))
+            for form in forms(disc):
+                for h in form.get('known_images', []) + form.get('variant_images', []):
+                    idx['images'][h] = '%s/%s' % (r['name'], form['name'])
+                for rel, h in form.get('key_files', {}).items():
+                    idx['key_files'].setdefault(h, []).append('%s/%s/%s' % (r['name'], form['name'], rel))
     json.dump(idx, open('recipes.json', 'w'), indent=1, sort_keys=True)
     print('recipes.json: %d containers, %d images, %d key files' % (
         len(idx['containers']), len(idx['images']), len(idx['key_files'])))
