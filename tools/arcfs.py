@@ -131,7 +131,7 @@ def extract(path, outdir):
             continue
         if t == 1:
             continue
-        p = os.path.join(stack[-1], name)
+        p = os.path.join(stack[-1], name.replace('/', '.'))   # RISC OS '/' is the host's '.'
         if info >> 31:
             os.makedirs(p, exist_ok=True)
             stack.append(p)

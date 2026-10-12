@@ -23,7 +23,10 @@ any dump of the same release is found, whatever its file name or format:
 
 Recipes are looked for in $COOK_RECIPES (directories separated by ':'),
 default ~/games/*. INPUT is a .zip (its members are examined) or a disc
-image; .adf (ADFS D/E/F, via adf_extract.py) is the only format so far.
+image or archive: .adf (ADFS D/E/F, via adf_extract.py) or an ArcFS
+archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
+arcfs.py; a zip member too). A "disc" in a recipe is then the archive's
+contents.
 
 recipe.json:
   name, title, platform
@@ -71,6 +74,11 @@ def recipes():
 
 
 # --- the inputs: containers and disc images
+def is_arcfs(path):
+    with open(path, 'rb') as f:
+        return f.read(8) == b'Archive\0'
+
+
 def images_in(inputs, tmp):
     """every disc image in the inputs: (name, path, container sha256 or None)"""
     out = []
@@ -79,7 +87,7 @@ def images_in(inputs, tmp):
             ch = sha256(p)
             with zipfile.ZipFile(p) as z:
                 for n in z.namelist():
-                    if n.lower().endswith('.adf'):
+                    if n.lower().endswith('.adf') or (not n.endswith('/') and z.open(n).read(8) == b'Archive\0'):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))
@@ -115,7 +123,8 @@ class Disc:
         self.sha = sha256(path)
         self.tree = os.path.join(tmp, 'x' + self.sha[:16])
         if not os.path.isdir(self.tree):
-            r = subprocess.run([sys.executable, '-I', os.path.join(TOOLS, 'adf_extract.py'), path, self.tree],
+            tool = 'arcfs.py' if is_arcfs(path) else 'adf_extract.py'
+            r = subprocess.run([sys.executable, '-I', os.path.join(TOOLS, tool), path, self.tree],
                                capture_output=True, text=True)
             self.clean = r.returncode == 0
         else:
