@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000 and Chocks Away. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool and Warlocks. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -27,7 +27,9 @@ into a game.
                                      game's own unpacker (Lemmings' tools/unpack_lemboot.py)
     gap_roots.py                     run-time gaps -> roots for the next analysis
     bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on a game's bas.c runtime
-    cook.py identify|extract|build   recipes: recognise a user's discs (by content) and
+    spark.py ARCHIVE OUT             Spark archives (ARC with RISC OS headers, also &DDC):
+                                     stored, packed, crunched, squashed, compressed
+    weave.py identify|extract|build  recipes: recognise a user's discs (by content) and
                                      build the game from them (see Recipes, below)
     gen_c.py, spider.py, gen_asm.py, the old Python recompiler and the modules it
     export_ghidra.py                 imports: only for the Ghidra-based analyses
@@ -72,6 +74,13 @@ loads it to. Run `superspider` with no arguments for the full option list.
     libroger's interpreter and saves the image when it reaches &8064.
   - Squeezed modules (Fervour's SoundMaster, AEHModule) are absolutes that
     insert the module they carry; unpack those the same way.
+  - Code loaded as data: Warlocks unpacks its music player (WM, from its
+    data disc, with its own LZW) into its own image and calls it. Its
+    `tools/unpack` runs the game interpreted until the call and writes the
+    image with those bytes in place; that image is translated and run, so
+    when the game unpacks WM again it writes the same bytes (libroger
+    compares a stored-to code word with what it held before, not with what
+    was translated).
 
   The image you translate is the one that actually runs, at the address it
   runs from.
@@ -238,13 +247,16 @@ roots, Makefile) plus a recipe.json are everything needed to rebuild the
 game from a user's own copy, and contain no game data, so the repository
 can be shared. recipe.json lists the discs it needs, each recognised by
 content - the sha256 of known images, and of the "key files" on the disc
-that the build depends on - and the build steps. `cook.py build INPUT...`
+that the build depends on - and the build steps. `weave.py build INPUT...`
 finds the recipe the inputs match (any repository under ~/games, or
-$COOK_RECIPES), extracts the discs into it and runs the steps; a game's
+$WEAVE_RECIPES), extracts the discs into it and runs the steps; a game's
 build.sh does the same for that recipe alone. A dump that matches only some
 key files (another release, a modified copy) scores below 100% and isn't
-built from. `cook.py index` writes recipes.json, every recipe's
-fingerprints in one file. Chocks Away is the first (~/games/chocks-away).
+built from. `weave.py index` writes recipes.json, every recipe's
+fingerprints in one file. Chocks Away is the first (~/games/chocks-away);
+Zool's input is an ArcFS archive, Warlocks' two discs (a disc's "game_dirs"
+entry "$" copies the whole disc into game/, for a data disc the program
+reads from its root).
 
 Make the derived files (extracted/, game/, unpacked/, the generated C)
 .gitignored, and keep the original discs out of the repository.

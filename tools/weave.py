@@ -13,20 +13,22 @@ any dump of the same release is found, whatever its file name or format:
     duplicator's copy, a played copy with a different high score file)
     still matches if its key files do. The score is the fraction found.
 
-    cook.py identify INPUT...           which recipes the inputs match, best first
-    cook.py extract RECIPE_DIR INPUT... the recipe's discs from the inputs ->
-                                        RECIPE_DIR/extracted/<disc>, merged into
-                                        RECIPE_DIR/game (its "game_dirs")
-    cook.py build INPUT... [-o EXE]     identify, then run the best recipe's
-                                        "build" steps; copy its output to EXE
-    cook.py index                       every recipe's fingerprints -> recipes.json
+    weave.py identify INPUT...           which recipes the inputs match, best first
+    weave.py extract RECIPE_DIR INPUT... the recipe's discs from the inputs ->
+                                         RECIPE_DIR/extracted/<disc>, merged into
+                                         RECIPE_DIR/game (its "game_dirs")
+    weave.py build INPUT... [-o EXE]     identify, then run the best recipe's
+                                         "build" steps; copy its output to EXE
+    weave.py index                       every recipe's fingerprints -> recipes.json
 
-Recipes are looked for in $COOK_RECIPES (directories separated by ':'),
+Recipes are looked for in $WEAVE_RECIPES (directories separated by ':'),
 default ~/games/*. INPUT is a .zip (its members are examined) or a disc
-image or archive: .adf (ADFS D/E/F, via adf_extract.py) or an ArcFS
+image or archive: .adf (ADFS D/E/F, via adf_extract.py), an ArcFS
 archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
-arcfs.py; a zip member too). A "disc" in a recipe is then the archive's
-contents.
+arcfs.py) or a Spark archive (&DDC too, ARC's &1A header with the RISC OS
+bit, via spark.py); a zip member too. A "disc" in a recipe is then the
+archive's contents. (TOSEC names Spark archives ".zip", but zipfile tells
+them apart.)
 
 recipe.json:
   name, title, platform
@@ -34,9 +36,11 @@ recipe.json:
   discs[]                 name, title, known_images [sha256], variant_images
                           [sha256] (other known dumps), key_files {path on the
                           disc: sha256}, game_dirs [directories copied to
-                          game/], optional (true: not needed)
+                          game/; "$" copies the whole disc into game/ itself],
+                          optional (true: not needed)
   build[]                 shell commands run in the recipe directory, in
-                          order; "INPUTS" stands for the input files
+                          order; "INPUTS" stands for the input files and
+                          $WEAVE for this script
   output                  the executable the build makes (relative)
 """
 import glob
@@ -51,6 +55,8 @@ import tempfile
 import zipfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TOOLS)
+from spark import is_spark   # noqa: E402
 
 
 def sha256(path):
@@ -62,7 +68,7 @@ def sha256(path):
 
 
 def recipes():
-    dirs = os.environ.get('COOK_RECIPES')
+    dirs = os.environ.get('WEAVE_RECIPES')
     pats = dirs.split(':') if dirs else [os.path.expanduser('~/games/*')]
     out = []
     for p in pats:
@@ -79,6 +85,11 @@ def is_arcfs(path):
         return f.read(8) == b'Archive\0'
 
 
+def is_archive(head):
+    """an ArcFS or Spark archive, from its first bytes"""
+    return head == b'Archive\0' or (len(head) > 1 and head[0] == 0x1a and head[1] in (0x81, 0x82, 0x83, 0x88, 0x89, 0xff))
+
+
 def images_in(inputs, tmp):
     """every disc image in the inputs: (name, path, container sha256 or None)"""
     out = []
@@ -87,7 +98,7 @@ def images_in(inputs, tmp):
             ch = sha256(p)
             with zipfile.ZipFile(p) as z:
                 for n in z.namelist():
-                    if n.lower().endswith('.adf') or (not n.endswith('/') and z.open(n).read(8) == b'Archive\0'):
+                    if n.lower().endswith('.adf') or (not n.endswith('/') and is_archive(z.open(n).read(8))):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))
@@ -123,7 +134,7 @@ class Disc:
         self.sha = sha256(path)
         self.tree = os.path.join(tmp, 'x' + self.sha[:16])
         if not os.path.isdir(self.tree):
-            tool = 'arcfs.py' if is_arcfs(path) else 'adf_extract.py'
+            tool = 'arcfs.py' if is_arcfs(path) else 'spark.py' if is_spark(path) else 'adf_extract.py'
             r = subprocess.run([sys.executable, '-I', os.path.join(TOOLS, tool), path, self.tree],
                                capture_output=True, text=True)
             self.clean = r.returncode == 0
@@ -203,7 +214,7 @@ def extract(rdir, inputs):
             if not full:
                 if disc.get('optional'):
                     continue
-                sys.exit('cook: no complete dump of %s (%s) among the inputs' % (disc['name'], disc['title']))
+                sys.exit('weave: no complete dump of %s (%s) among the inputs' % (disc['name'], disc['title']))
             d = best[disc['name']][1]
             print('%s: %s' % (disc['name'], d.name))
             dst = os.path.join(rdir, 'extracted', disc['name'])
@@ -214,7 +225,11 @@ def extract(rdir, inputs):
         os.makedirs(game)
         for disc in r['discs']:
             for gd in disc.get('game_dirs', []):
-                src = find_path(os.path.join(rdir, 'extracted', disc['name']), gd)
+                tree = os.path.join(rdir, 'extracted', disc['name'])
+                if gd == '$':               # the whole disc, at the top of game/
+                    shutil.copytree(tree, game, dirs_exist_ok=True)
+                    continue
+                src = find_path(tree, gd)
                 if src:
                     shutil.copytree(src, os.path.join(game, os.path.basename(src)))
     finally:
@@ -228,11 +243,11 @@ def build(inputs, out):
     finally:
         shutil.rmtree(tmp)
     if not ranked or ranked[0][0] < 1:
-        sys.exit('cook: no recipe has everything it needs in these inputs')
+        sys.exit('weave: no recipe has everything it needs in these inputs')
     _, _, rdir, r, _ = ranked[0]
-    print('cooking %s in %s' % (r['name'], rdir))
+    print('weaving %s in %s' % (r['name'], rdir))
     ins = ' '.join(shlex.quote(os.path.abspath(i)) for i in inputs)
-    env = dict(os.environ, COOK=os.path.abspath(__file__))
+    env = dict(os.environ, WEAVE=os.path.abspath(__file__))
     for step in r['build']:
         cmd = step.replace('INPUTS', ins)
         print('+', cmd)

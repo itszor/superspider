@@ -51,7 +51,7 @@ src/      arm2.ml decoder, image.ml images + module headers, spider.ml (S0),
           address-taken entry points), riscos.ml (SWI argument kinds),
           gen.ml (the C translation), json.ml (reading saved analyses)
 bin/      command-line tool
-tools/    the tools every game recompilation shares: recipes (cook.py), disc/archive extraction,
+tools/    the tools every game recompilation shares: recipes (weave.py), disc/archive extraction,
           gap_roots.py, bas2c.py (see PORTING.md); gen_c.py and the modules it
           imports (spider.py, gen_asm.py, export_ghidra.py) only for the old
           Ghidra-based analyses (Lemmings' and Galactic Dan's regen-ghidra)
