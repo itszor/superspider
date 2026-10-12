@@ -28,7 +28,11 @@ archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
 arcfs.py) or a Spark archive (&DDC too, ARC's &1A header with the RISC OS
 bit, via spark.py); a zip member too. A "disc" in a recipe is then the
 archive's contents. (TOSEC names Spark archives ".zip", but zipfile tells
-them apart.)
+them apart.) A zip holding none of those is itself a disc, its files
+plain (RISC OS zips' filetypes, the "ARC0" extra field, become ',load-exec'
+suffixes); and so is a directory (e.g. an emulator's HostFS copy of the
+game). A plain disc's "image" fingerprint is the sha256 of its files'
+paths and contents.
 
 recipe.json:
   name, title, platform
@@ -36,7 +40,8 @@ recipe.json:
   discs[]                 name, title, known_images [sha256], variant_images
                           [sha256] (other known dumps), key_files {path on the
                           disc: sha256}, game_dirs [directories copied to
-                          game/; "$" copies the whole disc into game/ itself],
+                          game/, merged with any of the same name from an
+                          earlier disc; "$" copies the whole disc into game/],
                           optional (true: not needed)
   build[]                 shell commands run in the recipe directory, in
                           order; "INPUTS" stands for the input files and
@@ -90,21 +95,86 @@ def is_archive(head):
     return head == b'Archive\0' or (len(head) > 1 and head[0] == 0x1a and head[1] in (0x81, 0x82, 0x83, 0x88, 0x89, 0xff))
 
 
+# RISC OS zip tools sometimes declare their "ARC0" extra field longer
+# than it is, which zipfile rejects: the field is read here, so let it be.
+_decode_extra = zipfile.ZipInfo._decodeExtra
+
+
+def _lenient_extra(self, *a):
+    try:
+        _decode_extra(self, *a)
+    except zipfile.BadZipFile:
+        pass
+
+
+zipfile.ZipInfo._decodeExtra = _lenient_extra
+
+
+def riscos_suffix(info):
+    """',llllllll-eeeeeeee' from a zip member's RISC OS extra field ("ARC0"), or ''"""
+    x = info.extra
+    while len(x) >= 4:
+        tag, size = int.from_bytes(x[0:2], 'little'), int.from_bytes(x[2:4], 'little')
+        body = x[4:4 + size]
+        if tag == 0x4341 and body[:4] == b'ARC0' and len(body) >= 12:
+            return ',%08x-%08x' % (int.from_bytes(body[4:8], 'little'), int.from_bytes(body[8:12], 'little'))
+        x = x[4 + size:]
+    return ''
+
+
+def unzip_plain(z, dst):
+    """a zip of plain files -> dst, with RISC OS types as name suffixes"""
+    for info in z.infolist():
+        name = info.filename
+        if not info.flag_bits & 0x800:             # not UTF-8: RISC OS names are Latin-1
+            name = name.encode('cp437').decode('latin-1')
+        parts = [q for q in name.split('/') if q not in ('', '.', '..')]
+        if not parts:
+            continue
+        p = os.path.join(dst, *parts)
+        if info.is_dir():
+            os.makedirs(p, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        suf = riscos_suffix(info)
+        with z.open(info) as f, open(p + (suf if ',' not in parts[-1] else ''), 'wb') as o:
+            shutil.copyfileobj(f, o)
+
+
 def images_in(inputs, tmp):
-    """every disc image in the inputs: (name, path, container sha256 or None)"""
+    """every disc image in the inputs: (name, path, container sha256 or None);
+    path is a directory for a plain disc"""
     out = []
     for p in inputs:
-        if zipfile.is_zipfile(p):
+        if os.path.isdir(p):
+            out.append((os.path.basename(os.path.normpath(p)), p, None))
+        elif zipfile.is_zipfile(p):
             ch = sha256(p)
             with zipfile.ZipFile(p) as z:
+                n0 = len(out)
                 for n in z.namelist():
                     if n.lower().endswith('.adf') or (not n.endswith('/') and is_archive(z.open(n).read(8))):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))
+                if len(out) == n0:                  # no discs in it: the zip is one
+                    d = os.path.join(tmp, 'p%d' % len(out))
+                    unzip_plain(z, d)
+                    out.append((os.path.basename(p), d, ch))
         else:
             out.append((os.path.basename(p), p, None))
     return out
+
+
+def tree_sha(top):
+    """a directory's fingerprint: its files' relative paths and contents"""
+    h = hashlib.sha256()
+    for d, dirs, files in sorted(os.walk(top)):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(d, f)
+            h.update(os.path.relpath(p, top).encode() + b'\0' + sha256(p).encode())
+    return h.hexdigest()
 
 
 def find(d, name):
@@ -131,6 +201,9 @@ class Disc:
     """one input disc image, extracted"""
     def __init__(self, name, path, container, tmp):
         self.name, self.path, self.container = name, path, container
+        if os.path.isdir(path):                     # a plain disc: its files
+            self.sha, self.tree, self.clean, self._files = tree_sha(path), path, True, {}
+            return
         self.sha = sha256(path)
         self.tree = os.path.join(tmp, 'x' + self.sha[:16])
         if not os.path.isdir(self.tree):
@@ -231,7 +304,8 @@ def extract(rdir, inputs):
                     continue
                 src = find_path(tree, gd)
                 if src:
-                    shutil.copytree(src, os.path.join(game, os.path.basename(src)))
+                    shutil.copytree(src, os.path.join(game, os.path.basename(src)),
+                                    dirs_exist_ok=True)     # discs may share an application
     finally:
         shutil.rmtree(tmp)
 

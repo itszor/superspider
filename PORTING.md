@@ -253,10 +253,18 @@ $WEAVE_RECIPES), extracts the discs into it and runs the steps; a game's
 build.sh does the same for that recipe alone. A dump that matches only some
 key files (another release, a modified copy) scores below 100% and isn't
 built from. `weave.py index` writes recipes.json, every recipe's
-fingerprints in one file. Chocks Away is the first (~/games/chocks-away);
-Zool's input is an ArcFS archive, Warlocks' two discs (a disc's "game_dirs"
-entry "$" copies the whole disc into game/, for a data disc the program
-reads from its root).
+fingerprints in one file. Chocks Away was the first (~/games/chocks-away);
+every game has one now. Their inputs: TOSEC zips of disc images (Twin
+World, Gyrinus II, Stunt Racer 2000, Fervour, Lemmings), disc images
+(Warlocks, Galactic Dan), ArcFS archives (Zool, Pac-Mania), and zips of
+plain files or directories (Pushy II, Elite: the filetypes from the zip's
+RISC OS extra fields). A disc's "game_dirs" entry "$" copies the whole
+disc into game/ (Warlocks' data disc, read from its root); directories of
+the same name from several discs are merged (Stunt Racer's !SR2000). A
+game that needs more than files from the disc (an unpacker run, a layout
+of its own) does it in a build step, in tools/: Elite's images.py
+assemble, Galactic Dan's game.py (the decrypted game, from an
+unprotected or cracked disc).
 
 Make the derived files (extracted/, game/, unpacked/, the generated C)
 .gitignored, and keep the original discs out of the repository.
