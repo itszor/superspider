@@ -45,7 +45,9 @@ recipe.json:
                           optional (true: not needed), alternatives [discs:
                           other releases that serve as this one, each with
                           its own name, title, images, key_files and
-                          game_dirs]
+                          game_dirs], raw (true: the image itself is
+                          copied to extracted/<its name>.img too, for a
+                          game that reads sectors no file holds)
   (the disc or alternative matched is extracted to extracted/<its name>,
   so a build step can tell which one it has)
   build[]                 shell commands run in the recipe directory, in
@@ -301,6 +303,8 @@ def extract(rdir, inputs):
         for disc in r['discs']:
             for form in forms(disc):
                 shutil.rmtree(os.path.join(rdir, 'extracted', form['name']), ignore_errors=True)
+                if os.path.isfile(os.path.join(rdir, 'extracted', form['name'] + '.img')):
+                    os.remove(os.path.join(rdir, 'extracted', form['name'] + '.img'))
             full = False
             if disc['name'] in best:
                 (n, _, _), d, form = best[disc['name']]
@@ -311,6 +315,8 @@ def extract(rdir, inputs):
                 sys.exit('weave: no complete dump of %s (%s) among the inputs' % (disc['name'], disc['title']))
             print('%s: %s%s' % (disc['name'], d.name, '' if form is disc else ' (as %s)' % form['name']))
             shutil.copytree(d.tree, os.path.join(rdir, 'extracted', form['name']))
+            if form.get('raw') and not os.path.isdir(d.path):
+                shutil.copy(d.path, os.path.join(rdir, 'extracted', form['name'] + '.img'))
             got[disc['name']] = form
         game = os.path.join(rdir, 'game')
         shutil.rmtree(game, ignore_errors=True)

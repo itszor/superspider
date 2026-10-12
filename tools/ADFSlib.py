@@ -25,6 +25,7 @@ __version__ = "0.42"
 __license__ = "GNU General Public License (version 3)"
 
 import argparse
+import io
 import logging
 import os
 import string
@@ -878,6 +879,18 @@ class ADFSdisc(Utilities):
         adf.seek(0, 2)
         length = adf.tell()
         adf.seek(0, 0)
+
+        # A dump that stops after the last sector in use (Starch's: 620K of
+        # an 800K D format disc) is the size its old map gives, padded.
+        standard = (163840, 327680, 655360, 819200, 1638400)
+        if length not in standard and length >= 0x200:
+            head = adf.read(0x200)
+            adf.seek(0, 0)
+            size = int.from_bytes(head[0xfc:0xff], 'little') * 256
+            if length < size and size in standard:
+                logging.warning("short image (%d bytes): padded to the old map's %d" % (length, size))
+                adf = io.BytesIO(adf.read() + bytes(size - length))
+                length = size
 
         if length == 163840:
             self.ntracks = 40

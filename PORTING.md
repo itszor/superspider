@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool and Warlocks. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks and Starch. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -57,8 +57,9 @@ loads it to. Run `superspider` with no arguments for the full option list.
   they are the only record of where an absolute file loads and starts. An
   `ff8` type, or a load address of &8000 with matching exec, is a plain
   absolute. `fffff8xx`-style values are filetype-stamped (no address).
-- Old-map (D format) discs need a different reader. Galactic Dan's
-  `extracted/tools/adfsd.py` handled one, and ADFSlib may too.
+- Old-map (D format) discs: ADFSlib reads them (Starch), and pads a dump
+  cut short after its last used sector to the size its map gives.
+  Galactic Dan's `extracted/tools/adfsd.py` is another reader.
 - The files may themselves be archives (Fervour's disc holds an ArcFS
   archive: `arcfs.py`), BASIC programs (`detok.py`; Gyrinus II's loaders),
   or Obey files (!Run: plain text). Read every !Run, !Boot and BASIC
@@ -81,6 +82,12 @@ loads it to. Run `superspider` with no arguments for the full option list.
     when the game unpacks WM again it writes the same bytes (libroger
     compares a stored-to code word with what it held before, not with what
     was translated).
+
+  - Programs on sectors no file owns: Starch's loader reads its program
+    with ADFS_DiscOp from disc address &5000, decrypts it and checks for
+    the original disc. Its `tools/unpack.py` does the same from the disc
+    image (a recipe's `"raw": true` keeps it as extracted/<disc>.img) and
+    the translation starts after the checks (`--exec`).
 
   The image you translate is the one that actually runs, at the address it
   runs from.
@@ -146,6 +153,11 @@ fervour/) lists what it needed. The patterns so far:
 - records executed in place
 - setjmp/longjmp stacks
 - self-modified transfers
+- slots: a copy loop into the image from a source the analysis doesn't
+  know (Starch copies the current level's header, branches and all, into
+  one place). Calls into a slot are dispatched at run time and assumed to
+  return; list the slot in `roger_config.interpreted` and the code it
+  leads to in a roots file.
 
 Then regression-check (below). As a last resort, a game can list entry
 points in a roots file (`--roots`); `gap_roots.py` writes those for you

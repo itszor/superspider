@@ -415,7 +415,10 @@ type t = {
 
 (* A copy loop: len bytes from src (inside the image) to dst, found at the
    loop's closing branch. Code that jumps into the destination runs the
-   copy of the image there. *)
+   copy of the image there. src < 0: a slot - a copy into the image from a
+   source the analysis doesn't know (Starch copies the current level's
+   header, branches included, from one of five blocks into one place): what
+   the slot holds is only known at run time. *)
 and copy = { src : int; dst : int; len : int; loop_at : int }
 
 (* Saved stack pointers (setjmp/longjmp): str sp,[pc,#k] saves SP in a
@@ -480,10 +483,14 @@ let unreloc t a =
   if Image.inside t.img a then None
   else
     List.find_map (fun c ->
-        if a >= c.dst && a < c.dst + c.len && Image.inside t.img (a - c.dst + c.src)
+        if c.src >= 0 && a >= c.dst && a < c.dst + c.len && Image.inside t.img (a - c.dst + c.src)
         then Some (a - c.dst + c.src) else None) t.copies
 
 let map_addr t a = Option.value (unreloc t a) ~default:a
+
+(* An address in a slot (a copy loop's in-image destination, filled from
+   somewhere unknown): its words are whatever was copied there last. *)
+let in_slot t a = List.exists (fun c -> c.src < 0 && a >= c.dst && a < c.dst + c.len) t.copies
 
 (* A constant that may be a code address, used as evidence (site, how). *)
 let note_candidates t v site how =
@@ -1010,6 +1017,11 @@ let detect_copy_loop t head tail (entry : state) =
      | Some src, Some dst, Some n when n > 0 && Image.inside img src ->
        let c = { src; dst; len = n * k; loop_at = tail } in
        if not (List.mem c t.copies) then t.copies <- c :: t.copies
+     | None, Some dst, Some n when n > 0 && k land 3 = 0 && dst land 3 = 0
+                                   && Image.inside img dst && Image.inside img (dst + n * k - 1) ->
+       (* words to a word: what could be code *)
+       let c = { src = -1; dst; len = n * k; loop_at = tail } in
+       if not (List.mem c t.copies) then t.copies <- c :: t.copies
      | _ -> ())
   | _ -> ()
 
@@ -1181,7 +1193,8 @@ and analyse_function t f =
     | Consts s -> IS.for_all (fun c -> Image.inside img (c land addr_mask)) s
     | _ -> false
   and goto a target st =
-    if target <> f && Hashtbl.mem t.funcs target then apply_summary a st target
+    if in_slot t target then unknown_jump a st
+    else if target <> f && Hashtbl.mem t.funcs target then apply_summary a st target
     else
       match Hashtbl.find_opt first target with
       | Some old when target <> f
@@ -1515,6 +1528,8 @@ and analyse_function t f =
      inlining multiplies analysis cost. *)
   let call a st target =
     let st = set_reg st 14 (const (a + 4)) in
+    if in_slot t target then unknown_jump a st       (* a call into a slot: whatever it holds then *)
+    else begin
     add_func t target;
     ensure_analysed t target;
     if features.inline && Hashtbl.mem t.fn_unresolved target && target <> f && not (Hashtbl.mem t.in_progress target)
@@ -1523,7 +1538,8 @@ and analyse_function t f =
       Hashtbl.replace t.inlined a ();
       propagate target st
     end;
-    apply_summary a st target in
+    apply_summary a st target
+    end in
   let debug = match Sys.getenv_opt "SS_DEBUG" with
     | Some x -> int_of_string ("0x" ^ x) = f | None -> false in
   let debug_addr = Option.map (fun x -> int_of_string ("0x" ^ x)) (Sys.getenv_opt "SS_DEBUG_ADDR") in
