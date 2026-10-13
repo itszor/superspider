@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch and Darkwood. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood and Saloon Cars. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -32,6 +32,8 @@ into a game.
     bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on a game's bas.c runtime
     spark.py ARCHIVE OUT             Spark archives (ARC with RISC OS headers, also &DDC):
                                      stored, packed, crunched, squashed, compressed
+    implode.py ZIP                   PKWARE "imploded" zip members (method 6, as SparkFS
+                                     wrote them; zipfile can't): weave.py reads them with it
     weave.py identify|extract|build  recipes: recognise a user's discs (by content) and
                                      build the game from them (see Recipes, below)
     gen_c.py, spider.py, gen_asm.py, the old Python recompiler and the modules it
@@ -83,6 +85,11 @@ loads it to. Run `superspider` with no arguments for the full option list.
     libroger's interpreter and saves the image when it reaches &8064.
   - Squeezed modules (Fervour's SoundMaster, AEHModule) are absolutes that
     insert the module they carry; unpack those the same way.
+  - Saloon Cars keeps everything LZW-compressed for a module of the
+    crack's (LZWD): its `tools/unpack` RMLoads that module under
+    libroger's interpreter and calls LZWD_Decompress on each file. Its
+    BASIC programs are wrapped in stubs that copy them to &9000 and run
+    `BASIC -quit @start,end`; tools/images.py takes them out.
   - Code loaded as data: Warlocks unpacks its music player (WM, from its
     data disc, with its own LZW) into its own image and calls it. Its
     `tools/unpack` runs the game interpreted until the call and writes the
@@ -130,8 +137,14 @@ List every piece of ARM code that runs:
 - Programs loaded later (`roger_config.programs`), programs that
   relocate themselves (LemBoot: `--pcbias`), and loader programs that are
   only worth interpreting (`loader_programs`, e.g. a title picture).
-- BASIC: libroger has no BASIC interpreter. Translate the loader's logic
-  into game.c by hand (Gyrinus II: Warnung, Loading, RunMe, EndGame).
+- BASIC: libroger has no BASIC interpreter. Translate a short loader's
+  logic into game.c by hand (Gyrinus II: Warnung, Loading, RunMe,
+  EndGame), and a program with its own logic with tools/bas2c.py on a
+  bas.c runtime copied from the last game that used one (Stunt Racer 2000,
+  Chocks Away, Saloon Cars). Its heap must start at the program's TOP when
+  machine code lives in a DIMmed block. bas2c handles GOTOs between PROCs,
+  PROCs that run on into the next DEF, and ON ERRORs set in PROCs (Saloon
+  Cars' RACE); see its docstring.
 
 With more than one or two images, write a `tools/images.py` that drives
 analyse/gen/roots over a table of (name, path, base, exec, module). See
@@ -291,7 +304,7 @@ fingerprints in one file. Chocks Away was the first (~/games/chocks-away);
 every game has one now. Their inputs: TOSEC zips of disc images (Twin
 World, Gyrinus II, Stunt Racer 2000, Fervour, Lemmings), disc images
 (Warlocks, Galactic Dan; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
-plain files or directories (Pushy II, Elite: the filetypes from the zip's
+plain files or directories (Pushy II, Elite, Saloon Cars - SparkFS-imploded: the filetypes from the zip's
 RISC OS extra fields). A disc's "game_dirs" entry "$" copies the whole
 disc into game/ (Warlocks' data disc, read from its root); directories of
 the same name from several discs are merged (Stunt Racer's !SR2000). A
@@ -349,6 +362,12 @@ the old behaviour. Left for a pass of its own (Darkwood, October 2026):
   other places S1 asks Image.inside (constant jumps, tables, address-taken
   code) still treat an extern range inside the image (an overlay over a
   stale part of it) as the image's own. Nothing needed it yet.
+- Byte loads as values 0-255: S1 takes an ldrb's result as unknown, so a
+  computed jump on a byte's bits (Saloon Cars' CODE at &34440: ldrb r0;
+  ... add pc, pc, r0, lsr #4, four branches) is unresolved, and the game
+  lists its targets in analysis/code.roots. Knowing the range (and taking
+  a jump's targets word-aligned, as an ARM2 does) would resolve it, but
+  changes value analysis in every image.
 - libroger turns the OS pointer off on every mode change. RISC OS may well
   leave it as it was (games started from the desktop hide its pointer
   with OS_Byte 106,0 after their mode change; Darkwood relies on it

@@ -31,7 +31,8 @@ bit, via spark.py); a zip member too. A "disc" in a recipe is then the
 archive's contents. (TOSEC names Spark archives ".zip", but zipfile tells
 them apart.) A zip holding none of those is itself a disc, its files
 plain (RISC OS zips' filetypes, the "ARC0" extra field, become ',load-exec'
-suffixes); and so is a directory (e.g. an emulator's HostFS copy of the
+suffixes; imploded members, as SparkFS wrote them, via implode.py); and
+so is a directory (e.g. an emulator's HostFS copy of the
 game). A plain disc's "image" fingerprint is the sha256 of its files'
 paths and contents.
 
@@ -74,6 +75,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 from spark import is_spark   # noqa: E402
 import hfe                   # noqa: E402
+from implode import read_member   # noqa: E402
 
 
 def sha256(path):
@@ -134,6 +136,14 @@ def riscos_suffix(info):
     return ''
 
 
+def member_head(z, n):
+    i = z.getinfo(n)
+    if i.compress_type == 6:                    # imploded (SparkFS): zipfile can't open it
+        return read_member(z, i)[:8]
+    with z.open(i) as f:
+        return f.read(8)
+
+
 def unzip_plain(z, dst):
     """a zip of plain files -> dst, with RISC OS types as name suffixes"""
     for info in z.infolist():
@@ -149,8 +159,8 @@ def unzip_plain(z, dst):
             continue
         os.makedirs(os.path.dirname(p), exist_ok=True)
         suf = riscos_suffix(info)
-        with z.open(info) as f, open(p + (suf if ',' not in parts[-1] else ''), 'wb') as o:
-            shutil.copyfileobj(f, o)
+        with open(p + (suf if ',' not in parts[-1] else ''), 'wb') as o:
+            o.write(read_member(z, info))
 
 
 def images_in(inputs, tmp):
@@ -165,7 +175,7 @@ def images_in(inputs, tmp):
             with zipfile.ZipFile(p) as z:
                 n0 = len(out)
                 for n in z.namelist():
-                    if n.lower().endswith(('.adf', '.hfe')) or (not n.endswith('/') and is_archive(z.open(n).read(8))):
+                    if n.lower().endswith(('.adf', '.hfe')) or (not n.endswith('/') and is_archive(member_head(z, n))):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))

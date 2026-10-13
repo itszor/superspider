@@ -14,8 +14,18 @@ Semantics kept from BASIC:
 - ON ERROR [LOCAL] handlers are setjmp points; an error longjmps to the
   current handler, which runs the rest of its line and carries on.
 - Every line sets bas_line (ERL, and for debugging).
-- GOTO n (and THEN n, ELSE n) is a C goto to a label on line n, so it
-  must stay within one PROC/FN (or the main program).
+- GOTO n (and THEN n, ELSE n) is a C goto to a label on line n. PROCs a
+  GOTO joins (one going on in another's body: Saloon Cars' shared tails),
+  or that run on into the next DEF (BASIC skips a DEF line as it would a
+  REM), are one C function, a group, entered by a switch; each PROC is a
+  wrapper that binds its parameters and enters it at its own start.
+- A (non-LOCAL) ON ERROR in a PROC/FN outlives it: BASIC resets the stack
+  on an error and runs the rest of the handler's line at the top level. A
+  handler that ends in a GOTO is run from bas_main (bas_top); a GOTO there
+  to a line in a PROC enters that PROC's group with no PROC around it (so
+  its ENDPROC is BASIC's "Not in a procedure"). One that carries on into
+  the PROC's next line stays a setjmp in the PROC, good while it runs
+  (Stunt Racer's menu loop).
 Names: x% -> x_I, x -> x_R, x$ -> x_S; arrays x%() -> x_AI, x() -> x_AR,
 x$() -> x_AS; PROCx -> PROC_x, FNx -> FN_x; a backtick becomes _Q_.
 """
@@ -154,6 +164,14 @@ class Trans:
         self.calls = {}           # proc/fn name -> param types (from DEFs)
         self.targets = goto_targets(toks)
         self.cond_loops = set()   # loops opened inside an IF's branch
+        self.top_handlers = []    # (C body, routine) of ON ERRORs in PROCs/FNs
+        self.cur_routine = 0      # 0 the main program, k the k'th DEF
+        self.owner, r = {}, 0     # line number -> its routine
+        for k, t in enumerate(toks):
+            if t.kind == 'nl' and t.val is not None:
+                if toks[k + 1].kind == 'kw' and toks[k + 1].val == 'DEF':
+                    r += 1
+                self.owner[t.val] = r
 
     # --- token helpers
     def peek(self, k=0):
@@ -247,6 +265,8 @@ class Trans:
             return '((int32_t)(%s) %s (%s))' % (self.toint(a, at), op, self.toint(b, bt)), 'i'
         if op == '>>>':
             return '((int32_t)((uint32_t)(%s) >> (%s)))' % (self.toint(a, at), self.toint(b, bt)), 'i'
+        if op == '+' and (at == 's') != (bt == 's') and not self.lenient:   # "a"+1: BASIC's error
+            return '(bas_error(6, "Type mismatch"), s_(""))', 's'
         if op == '+' and at == 's':
             return 'cat(%s, %s)' % (a, b), 's'
         if op in ('DIV', 'MOD'):
@@ -429,6 +449,10 @@ class Trans:
             self.expect('op', '#')
             a, t = self.unary()
             return 'bas_bget(%s)' % self.toint(a, t), 'i'
+        if v == 'EXT':
+            self.expect('op', '#')
+            a, t = self.unary()
+            return 'bas_ext(%s)' % self.toint(a, t), 'i'
         if v == 'TINT':
             raise Fail('TINT')
         raise Fail('line %s: keyword %s in expression' % (tok.line, v))
@@ -670,6 +694,9 @@ class Trans:
     def s_QUIT(self):
         return ['quit();']
 
+    def s_STOP(self):                            # an error: number 0, "Stopped"
+        return ['bas_error(0, "Stopped");']
+
     def s_LOCAL(self):
         if self.accept('kw', 'ERROR'):
             self.has_handlers = True
@@ -695,6 +722,9 @@ class Trans:
             h = 'h_%d' % n if local else 'bas_global'
             if local:
                 self.locals.append('HND h_%d;' % n)
+            elif self.cur_routine and ends_flow(body):   # outlives the PROC/FN: run from bas_main
+                self.top_handlers.append((body, self.cur_routine))
+                return ['bas_top_k = %d; bas_top.undo = 0; bas_h = &bas_top;' % (len(self.top_handlers) - 1)]
             return ['if (setjmp(%s.jb)) {' % h] + ['    ' + x for x in body] + \
                    ['} else { %s.undo = undo_mark(); bas_h = &%s; }' % (h, h)]
         c, t = self.expr()                       # ON n PROCa, PROCb, ...
@@ -784,6 +814,8 @@ class Trans:
         for k, (ic, it) in enumerate(ins):
             regs.append('R[%d] = %s;' % (k, 'roger_scratch_n(%d, (%s).s)' % (k, ic) if it == 's' else
                                          '(uint32_t)%s' % self.toint(ic, it)))
+        for k in range(len(ins), 10):            # registers not given are 0, as BASIC passes them
+            regs.append('R[%d] = 0;' % k)
         res = []
         for k, o in enumerate(outs):
             if o:
@@ -802,12 +834,16 @@ class Trans:
                 e, et = self.expr()
                 out.append('bas_print_%s(%s, %s);' % (et, fh, e))
             return out
+        hexnum = False
         while not self.stmt_end():
             if self.accept('op', ';'):
                 last = ';'
                 continue
             if self.accept('op', ','):
                 last = ','
+                continue
+            if self.accept('op', '~'):                # the next number in hex
+                hexnum = True
                 continue
             if self.accept('op', "'"):
                 out.append('vdu(13, 10, -1);')
@@ -828,6 +864,11 @@ class Trans:
                 last = 'tab'
                 continue
             c, t = self.expr()
+            if hexnum and t != 's':
+                c, t = 'strx(%s)' % self.toint(c, t), 's'
+                if last != ';':                      # right-justified in the field, as numbers are
+                    c = 'right(cat(string_n(10, s_(" ")), %s), 10)' % c
+            hexnum = False
             out.append('print_s(%s);' % (c if t == 's' else 'str(%s)' % c if last == ';' else 'print_num(%s)' % c))
             last = 'x'
         if last not in (';', 'tab') or last is None:
@@ -989,6 +1030,15 @@ class Trans:
         c, t = self.unary()
         return ['bas_close(%s);' % self.toint(c, t)]
 
+    def s_BPUT(self):                            # BPUT#h, byte; or a string (+ LF unless ';')
+        self.expect('op', '#')
+        h, ht = self.unary()
+        self.expect('op', ',')
+        c, t = self.expr()
+        if t != 's':
+            return ['bas_bput(%s, %s);' % (self.toint(h, ht), self.toint(c, t))]
+        return ['bas_bput_s(%s, %s, %d);' % (self.toint(h, ht), c, 0 if self.accept('op', ';') else 1)]
+
     def s_INPUT(self):
         self.expect('op', '#')
         c, t = self.unary()
@@ -1012,6 +1062,7 @@ class Trans:
         defs = []
         self.globals_extra = []
         self.start_func()
+        self.cur_routine = 0
         main = self.block(())
         self.funcs.append(('main', 'main', [], main, self.locals, self.saves, self.has_handlers, 'i'))
         while self.at('nl') and self.peek().val is not None:
@@ -1021,6 +1072,7 @@ class Trans:
             name = self.next().val
             params = []
             self.start_func()
+            self.cur_routine += 1
             if self.accept('op', '('):            # formal parameters: variables or array elements
                 while True:
                     pname = self.peek().val
@@ -1115,6 +1167,76 @@ def scan_defs(toks):
     return calls
 
 
+GOTO_L = re.compile(r'goto l_(\d+);')
+
+
+def ends_flow(body):
+    """the body's last statement never runs on (ENDPROC, =, END, GOTO, an
+    error, or an IF ... ELSE ... ENDIF each of whose branches doesn't)"""
+    lines = [re.sub(r'^l_\d+: ', '', x).strip() for x in body]
+    lines = [x for x in lines if x and not re.match(r'L\(\d+\);$', x)]
+    if not lines:
+        return False
+    x = lines[-1]
+    if x != '}':
+        return x in ('goto out;', 'quit();') or x.startswith(('goto l_', '{ ret = ', 'bas_error('))
+    depth, k, elses = 0, len(lines) - 1, []
+    while k >= 0:                                # the block's opening line, and its } else {s
+        depth += lines[k].count('}') - lines[k].count('{')
+        if depth == 1 and lines[k] == '} else {':
+            elses.append(k)
+        if depth == 0:
+            break
+        k -= 1
+    if k < 0 or not lines[k].startswith('if (') or not elses:
+        return False
+    cuts = [k] + sorted(elses) + [len(lines) - 1]
+    return all(ends_flow(lines[a + 1:b]) for a, b in zip(cuts, cuts[1:]))
+
+
+def groups_of(tr):
+    """Routines joined by GOTOs between them or by running on into the next
+    DEF: {root: [routine, ...]} (only those of more than one, or entered at a
+    line by a top-level handler), entries {root: {line, ...}}, and the
+    routines that run on into the next"""
+    n = len(tr.funcs)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+    falls = set()
+    for k, f in enumerate(tr.funcs):
+        name, kind, body = f[0], f[1], f[3]
+        for t in GOTO_L.findall('\n'.join(body)):
+            o = tr.owner.get(int(t))
+            if o != k:
+                if o is None or o == 0 or k == 0:
+                    raise Fail('GOTO %s from %s into %s' % (t, name, 'the main program' if not o else tr.funcs[o][0]))
+                union(k, o)
+        if kind == 'PROC' and k + 1 < n and tr.funcs[k + 1][1] == 'PROC' and not ends_flow(body):
+            falls.add(k)
+            union(k, k + 1)
+    entries = {}
+    for body, r in tr.top_handlers:
+        for t in GOTO_L.findall('\n'.join(body)):
+            o = tr.owner.get(int(t))
+            if o:
+                entries.setdefault(find(o), set()).add(int(t))
+    groups = {}
+    for k in range(1, n):
+        groups.setdefault(find(k), []).append(k)
+    groups = {r: m for r, m in groups.items() if len(m) > 1 or r in entries}
+    for r, m in groups.items():
+        if any(tr.funcs[k][1] == 'FN' for k in m):
+            raise Fail('an FN joined with other routines: %s' % ', '.join(tr.funcs[k][0] for k in m))
+    return groups, entries, falls
+
+
 def emit(tr, toks):
     out = ['/* generated by bas2c.py - do not edit */', '#include <math.h>', '#include <stdlib.h>',
            '#include "bas.h"', '']
@@ -1133,19 +1255,58 @@ def emit(tr, toks):
     for a in sorted(tr.arrays):
         out.append('static ARR_%s %s;' % (vtype(a), cname(a, True)))
     out += tr.globals_extra
+    if tr.top_handlers:
+        out.append('static HND bas_top;                      /* ON ERRORs set in PROCs/FNs */')
+        out.append('static int bas_top_k;')
+    groups, entries, falls = groups_of(tr)
+    group_of = {k: r for r, m in groups.items() for k in m}
     rtype = CTYPE
+
+    def proto(name, kind, params, rt):
+        return 'static %s %s(%s)' % ('void' if kind == 'PROC' else rtype[rt], fname(kind, name),
+                                     ', '.join('%s a%d' % (CTYPE[p[1]], k) for k, p in enumerate(params)) or 'void')
     for name, kind, params, body, locs, saves, hh, rt in tr.funcs:
-        if kind == 'main':
-            continue
-        out.append('static %s %s(%s);' % ('void' if kind == 'PROC' else rtype[rt], fname(kind, name),
-                                             ', '.join('%s a%d' % (CTYPE[p[1]], k) for k, p in enumerate(params)) or 'void'))
+        if kind != 'main':
+            out.append(proto(name, kind, params, rt) + ';')
+    for r in sorted(groups):
+        out.append('static void G_%d(int e);' % r)
     out.append('')
-    for name, kind, params, body, locs, saves, hh, rt in tr.funcs:
+
+    def handlers():
+        """bas_main's top-level handlers: a GOTO into a PROC's group enters it there"""
+        lines = ['if (setjmp(bas_top.jb)) switch (bas_top_k) {']
+        for k, (body, r) in enumerate(tr.top_handlers):
+            if not ends_flow(body):
+                raise Fail('an ON ERROR in %s that carries on in it' % tr.funcs[r][0])
+
+            def enter(m):
+                o = tr.owner[int(m.group(1))]
+                if not o:
+                    return m.group(0)
+                return 'G_%d(%s); bas_error(13, "Not in a procedure");' % (group_of[o], m.group(1))
+            lines.append('case %d:' % k)
+            lines += ['    ' + GOTO_L.sub(enter, x) for x in body]
+        return lines + ['}']
+
+    for k, (name, kind, params, body, locs, saves, hh, rt) in enumerate(tr.funcs):
+        if k in group_of:                           # a wrapper: the parameters, then the group
+            members = groups[group_of[k]]
+            out.append(proto(name, kind, params, rt))
+            out.append('{')
+            out.append('    int mark = undo_mark();')
+            for j, p in enumerate(params):
+                out.append('    save_%s(&%s); %s = a%d;' % (p[1], p[0], p[0], j))
+            for v in sorted(set().union(*(tr.funcs[m][5] for m in members))):   # (any member's LOCALs)
+                out.append('    save_%s(&%s);' % (vtype(v), cname(v)))
+            out.append('    G_%d(%d);' % (group_of[k], -1 - members.index(k)))
+            out.append('    undo_to(mark);')
+            out.append('}')
+            out.append('')
+            continue
         if kind == 'main':
             out.append('void bas_main(void)')
         else:
-            out.append('static %s %s(%s)' % ('void' if kind == 'PROC' else rtype[rt], fname(kind, name),
-                                                ', '.join('%s a%d' % (CTYPE[p[1]], k) for k, p in enumerate(params)) or 'void'))
+            out.append(proto(name, kind, params, rt))
         out.append('{')
         out.append('    int mark = undo_mark();')
         if hh:
@@ -1154,10 +1315,12 @@ def emit(tr, toks):
             out.append('    %s ret = %s;' % (rtype[rt], ZERO[rt]))
         for l in locs:
             out.append('    ' + l)
-        for k, p in enumerate(params):
-            out.append('    save_%s(&%s); %s = a%d;' % (p[1], p[0], p[0], k))
-        for s in sorted(saves):
-            out.append('    save_%s(&%s);' % (vtype(s), cname(s)))
+        for j, p in enumerate(params):
+            out.append('    save_%s(&%s); %s = a%d;' % (p[1], p[0], p[0], j))
+        for v in sorted(saves):
+            out.append('    save_%s(&%s);' % (vtype(v), cname(v)))
+        if kind == 'main' and tr.top_handlers:
+            out += ['    ' + x for x in handlers()]
         out += ['    ' + x for x in body]
         out.append('out:')
         if hh:
@@ -1165,6 +1328,32 @@ def emit(tr, toks):
         out.append('    undo_to(mark);')
         if kind == 'FN':
             out.append('    return ret;')
+        out.append('}')
+        out.append('')
+    for r, members in sorted(groups.items()):
+        out.append('/* %s */' % ', '.join('%s%s' % (tr.funcs[m][1], tr.funcs[m][0]) for m in members))
+        out.append('static void G_%d(int e)' % r)
+        out.append('{')
+        hh = any(tr.funcs[m][6] for m in members)
+        if hh:
+            out.append('    HND *h_saved = bas_h;')
+        for m in members:
+            out += ['    ' + l for l in tr.funcs[m][4]]
+        out.append('    switch (e) {')
+        for j, m in enumerate(members):
+            out.append('    case %d: goto r_%d;' % (-1 - j, m))
+        for line in sorted(entries.get(r, ())):
+            out.append('    case %d: goto l_%d;' % (line, line))
+        out.append('    }')
+        for j, m in enumerate(members):
+            out.append('r_%d:' % m)
+            out += ['    ' + x for x in tr.funcs[m][3]]
+            if not (m in falls and j + 1 < len(members) and members[j + 1] == m + 1):
+                out.append('    goto out;')
+        out.append('out:')
+        if hh:
+            out.append('    bas_h = h_saved;')
+        out.append('    ;')
         out.append('}')
         out.append('')
     return '\n'.join(out) + '\n'
