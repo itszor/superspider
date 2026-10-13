@@ -2,7 +2,9 @@
 """Extract an ADFS disc image (D/E/F format .adf) into a directory, keeping
 the RISC OS directory tree. Each file name gets a ',load-exec' suffix (both
 eight hex digits) so the load/exec addresses - which say where an absolute
-image loads and starts - survive. Uses ADFSlib (David Boddie, GPL-3).
+image loads and starts - survive. A '/' in a RISC OS name (where a host's
+'.' would be: Chuck Rock's Serport/JS) becomes '.', as libroger reads it.
+Uses ADFSlib (David Boddie, GPL-3).
 
 Usage: adf_extract.py IMAGE.adf [OUT_DIR]   (OUT_DIR defaults to extracted)
 """
@@ -15,7 +17,7 @@ import ADFSlib
 
 def walk(files, path):
     for f in files:
-        p = os.path.join(path, f.name)
+        p = os.path.join(path, f.name.replace('/', '.'))
         if hasattr(f, 'files'):
             os.makedirs(p, exist_ok=True)
             walk(f.files, p)

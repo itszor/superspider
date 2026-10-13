@@ -69,6 +69,9 @@ C options (gen, or analyse with --c):
                     is known to arrive indirectly (smaller, needs complete roots)
   --pcbias          PC-derived values relative to the runtime's pc_bias (an image
                     that runs from a copy of itself)
+  --range FROM-TO   only the code in [FROM, TO), as an image of its own: an overlay
+                    analysed as part of the program it is loaded beside (an image
+                    of both), the program's code translated separately
   options may also be written --name=value
 |}
 
@@ -169,6 +172,12 @@ let parse_opts ~what rest =
     | "--covtag" :: c :: r -> gen_only (); o.gen <- { o.gen with covtag = c }; go r
     | "--pcbias" :: r -> gen_only (); o.gen <- { o.gen with pcbias = true }; go r
     | "--banner" :: b :: r -> gen_only (); o.gen <- { o.gen with banner = b }; go r
+    | "--range" :: x :: r ->
+      gen_only ();
+      (match String.split_on_char '-' x with
+       | [ lo; hi ] -> o.gen <- { o.gen with range = Some (int_of_hex lo, int_of_hex hi) }
+       | _ -> usage ());
+      go r
     | "--leaders" :: l :: r ->
       gen_only ();
       let l = match l with

@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood and Saloon Cars. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars and Chuck Rock. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -134,7 +134,16 @@ List every piece of ARM code that runs:
   them are assumed to return, and are listed (extern_calls) so that they
   become entry points of the image they land in. Darkwood's
   tools/images.py iterates that to a fixed point.
-- Programs loaded later (`roger_config.programs`), programs that
+- An overlay that leans on the program's code more than --extern can
+  describe (calls to its literal thunks, which return past the word after
+  the call; push-pc calls that return after a branch): analyse it as part
+  of one image with the program, and translate only its part with `gen
+  --range FROM-TO` (calls out of the range are dispatched to the program's
+  own translation). Chuck Rock's levels: GAME ends at &25928, where each
+  level's code is unpacked, so GAME + CODEn is one image at &8000.
+- Programs loaded later (`roger_config.programs`; an overlay loaded packed
+  into a buffer and unpacked into place is selected by the buffer address,
+  `roger_program.at`: Chuck Rock's CODE1-5), programs that
   relocate themselves (LemBoot: `--pcbias`), and loader programs that are
   only worth interpreting (`loader_programs`, e.g. a title picture).
 - BASIC: libroger has no BASIC interpreter. Translate a short loader's

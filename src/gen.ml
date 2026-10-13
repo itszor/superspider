@@ -43,10 +43,15 @@ type options = {
   covtag : string;          (* the coverage recorder's tag for this image ("" none) *)
   leaders : leaders;
   banner : string;          (* what the generated files say generated them *)
+  range : (int * int) option;
+                            (* emit only the code in [from, to): an overlay analysed
+                               together with the program it is loaded beside (the
+                               program's code is translated separately; calls into it
+                               are dispatched) *)
 }
 
 let default_options = { prefix = "F"; tabprefix = "recomp"; pcbias = false; files = 16; header = "gen";
-                        covtag = ""; leaders = All; banner = "superspider" }
+                        covtag = ""; leaders = All; banner = "superspider"; range = None }
 
 let of_s1 (t : S1.t) ~entries =
   let keys h = List.sort compare (Hashtbl.fold (fun k _ acc -> k :: acc) h []) in
@@ -68,6 +73,8 @@ type ctx = {
   data : string;
   base : int;
   iend : int;
+  ebase : int;                               (* the image emitted: [ebase, eend) (--range) *)
+  eend : int;
   owner_of : (int, int) Hashtbl.t;           (* every code word -> its C function *)
   funcs : (int, int list) Hashtbl.t;         (* C function -> its words, ascending *)
   calls : (int, unit) Hashtbl.t;             (* CALL overrides *)
@@ -329,10 +336,13 @@ let is_literal_thunk c t =
 let call_return_site c a w t = if w land (1 lsl 24) <> 0 && is_literal_thunk c t then a + 8 else a + 4
 
 (* Where control continues after a: a literal-thunk call skips its literal;
-   stmdb sp!,{pc} (push a return address) is followed by an NV filler. *)
+   stmdb sp!,{pc} (push a return address) skips the NV filler after it when
+   that is what follows (stmdb sp!,{pc}; movnv; b X). Otherwise the next
+   instruction is the call itself and runs (Chuck Rock: stmdb sp!,{pc};
+   ldr pc,[r6,#&2C]; movnv). *)
 let natural_next c a w =
   if (w lsr 25) land 7 = 5 && w land (1 lsl 24) <> 0 then call_return_site c a w (branch_target a w)
-  else if w land 0x0FFFFFFF = 0x092D8000 then a + 8
+  else if w land 0x0FFFFFFF = 0x092D8000 && inside c (a + 4) && word c (a + 4) lsr 28 = 0xF then a + 8
   else a + 4
 
 (* The unrolled body after a computed add pc,pc,X: its repetition period,
@@ -355,7 +365,9 @@ let duff_entries c a =
 
 let create o inp ~data ~base =
   let codes = List.sort compare (Hashtbl.fold (fun a () acc -> a :: acc) inp.code []) in
-  let c = { o; inp; data; base; iend = base + String.length data; owner_of = Hashtbl.create 8192;
+  let iend = base + String.length data in
+  let ebase, eend = Option.value o.range ~default:(base, iend) in
+  let c = { o; inp; data; base; iend; ebase; eend; owner_of = Hashtbl.create 8192;
             funcs = Hashtbl.create 1024; calls = Hashtbl.create 64; fallthrough = Hashtbl.create 64;
             duff = Hashtbl.create 16; smc = Hashtbl.create 16; smc_words = Hashtbl.create 16;
             leaders = Hashtbl.create 8192; insns = 0; nsmc = 0; nduff = 0 } in
@@ -416,6 +428,17 @@ let create o inp ~data ~base =
   Hashtbl.iter (fun o _ -> add o) c.funcs;
   Hashtbl.filter_map_inplace (fun a () -> if is_code c a then Some () else None) l;
   c.leaders <- l;
+  if o.range <> None then begin
+    (* only the range's words: functions trimmed to them (each entered at its
+       first), and its leaders; a call or jump out of it is dispatched *)
+    let inr a = a >= ebase && a < eend in
+    Hashtbl.filter_map_inplace (fun _ ws ->
+        match List.filter inr ws with
+        | [] -> None
+        | first :: _ as ws -> add first; Some ws) c.funcs;
+    Hashtbl.filter_map_inplace (fun a () -> if inr a then Some () else None) l;
+    Hashtbl.filter_map_inplace (fun a v -> if inr a then Some v else None) c.smc
+  end;
   c
 
 (* ------------------------------------------------------------------ translation *)
@@ -661,12 +684,12 @@ let write c outdir =
   List.iter (fun a -> line (Printf.sprintf "    {%s, %s_%x}," (h a) o.prefix (Hashtbl.find c.owner_of a))) ents;
   line "};";
   line (Printf.sprintf "const unsigned %s_nentries = %d;" o.tabprefix (List.length ents));
-  let nwords = (c.iend - c.base) / 4 in
+  let nwords = (c.eend - c.ebase) / 4 in
   let bits = Bytes.make ((nwords + 7) / 8) '\000' in
   Hashtbl.iter (fun a () ->
       if not (Hashtbl.mem c.smc a || Hashtbl.mem c.smc_words a) then begin
-        let k = (a - c.base) / 4 in
-        if k >= 0 && k / 8 < Bytes.length bits then
+        let k = (a - c.ebase) / 4 in
+        if k >= 0 && a < c.eend && k / 8 < Bytes.length bits then
           Bytes.set bits (k / 8) (Char.chr (Char.code (Bytes.get bits (k / 8)) lor (1 lsl (k mod 8))))
       end) c.inp.code;
   line (Printf.sprintf "const uint8_t %s_codemap[] = {" o.tabprefix);
@@ -678,10 +701,10 @@ let write c outdir =
     i := !i + 16
   done;
   line "};";
-  line (Printf.sprintf "const uint32_t %s_img_base = %s;" o.tabprefix (h c.base));
-  line (Printf.sprintf "const uint32_t %s_img_end = %s;" o.tabprefix (h c.iend));
+  line (Printf.sprintf "const uint32_t %s_img_base = %s;" o.tabprefix (h c.ebase));
+  line (Printf.sprintf "const uint32_t %s_img_end = %s;" o.tabprefix (h c.eend));
   line (Printf.sprintf "const struct roger_image %s_image = {%s, %s, %s_entries, %d, %s_codemap, %s};"
-          o.tabprefix (h c.base) (h c.iend) o.tabprefix (List.length ents) o.tabprefix
+          o.tabprefix (h c.ebase) (h c.eend) o.tabprefix (List.length ents) o.tabprefix
           (if o.covtag = "" then "0" else Printf.sprintf "'%s'" o.covtag));
   write_file (Filename.concat outdir "entries.c") (Buffer.contents buf);
   Printf.sprintf "functions %d, instructions %d, entry points %d, SMC sites %d, Duff jumps %d, files %d"
