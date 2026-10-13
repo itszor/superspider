@@ -29,7 +29,8 @@ into a game.
     arm2.py                          a small ARM2 emulator in Python, for running a
                                      game's own unpacker (Lemmings' tools/unpack_lemboot.py)
     gap_roots.py                     run-time gaps -> roots for the next analysis
-    bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on a game's bas.c runtime
+    bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on the BASIC runtime
+                                     (runtime/basic_runtime.{h,c}, below)
     spark.py ARCHIVE OUT             Spark archives (ARC with RISC OS headers, also &DDC):
                                      stored, packed, crunched, squashed, compressed
     implode.py ZIP                   PKWARE "imploded" zip members (method 6, as SparkFS
@@ -148,10 +149,14 @@ List every piece of ARM code that runs:
   only worth interpreting (`loader_programs`, e.g. a title picture).
 - BASIC: libroger has no BASIC interpreter. Translate a short loader's
   logic into game.c by hand (Gyrinus II: Warnung, Loading, RunMe,
-  EndGame), and a program with its own logic with tools/bas2c.py on a
-  bas.c runtime copied from the last game that used one (Stunt Racer 2000,
-  Chocks Away, Saloon Cars). Its heap must start at the program's TOP when
-  machine code lives in a DIMmed block. bas2c handles GOTOs between PROCs,
+  EndGame), and a program with its own logic with tools/bas2c.py, linked
+  with the BASIC runtime, $SS/runtime/basic_runtime.c (compile it with
+  -I$(SS)/runtime; Stunt Racer 2000, Chocks Away, Saloon Cars). Add to the
+  runtime what a new program needs, generally, rather than copying it.
+  game.c defines bas_page (PAGE) and bas_lomem (where the DIM heap starts:
+  the program's TOP, which must be right when machine code lives in a
+  DIMmed block) and may change its settings (bas_dim_clear, bas_sys_idle,
+  bas_cli) before calling bas_main(). bas2c handles GOTOs between PROCs,
   PROCs that run on into the next DEF, and ON ERRORs set in PROCs (Saloon
   Cars' RACE); see its docstring.
 
