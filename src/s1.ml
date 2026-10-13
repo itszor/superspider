@@ -78,6 +78,18 @@ type features = {
   mutable clib : bool;            (* calls into the Shared C Library's entry vectors (see lib_call) *)
 }
 
+(* Code in other images (--extern FROM-TO): a program split over several
+   files loaded side by side, calling each other at fixed addresses (an
+   overlay, a main file and its loader). A call into one is assumed to
+   return, with r0-r12 and lr unknown; a branch into one is a tail call.
+   A range inside the image counts as another's too (an overlay loaded
+   over part of it).
+   Their targets are listed in the output (extern_calls), to be entry
+   points of the image that holds them. *)
+let externs : (int * int) list ref = ref []
+let extern_targets : (int, unit) Hashtbl.t = Hashtbl.create 64
+let in_extern a = List.exists (fun (lo, hi) -> a >= lo && a < hi) !externs
+
 let features = { tables = false; memory = false; copies = false; fields = false; inline = false;
                  longjmp = false; dispatch = false; global_r12 = false; clib = false }
 
@@ -1118,7 +1130,9 @@ and analyse_function t f =
   let wl = Queue.create () in
   let summary = ref [] in
   let propagate a st =
-    if not (Image.inside img a) || a land 3 <> 0 then
+    if a land 3 = 0 && in_extern a then
+      Hashtbl.replace extern_targets a ()             (* a tail call into another image *)
+    else if not (Image.inside img a) || a land 3 <> 0 then
       Hashtbl.replace t.problems a (Printf.sprintf "flow to &%x outside image (function &%x)" a f)
     else begin
       if not (Hashtbl.mem first a) then Hashtbl.replace first a st;
@@ -1637,7 +1651,12 @@ and analyse_function t f =
              | None -> ());
           goto a target st
         | Arm2.Branch { link = true; target } ->
-          if Image.inside img target then call a st target
+          if Image.inside img target && not (in_extern target) then call a st target
+          else if in_extern target then begin
+            Hashtbl.replace extern_targets target ();
+            Hashtbl.replace t.assumed a ();
+            goto a next { (clobber st [ 0; 1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12; 14 ]) with fk = -1; cmp = None }
+          end
           else Hashtbl.replace t.problems a (Printf.sprintf "call to &%x outside image" target)
         | Arm2.Swi n when n land lnot 0x20000 = 0x01 ->
           let rec strend s = if Image.in_range img s && Image.byte img s <> 0 then strend (s + 1) else s in
@@ -1685,6 +1704,25 @@ and analyse_function t f =
               | _ -> st in
             if rd = 15 then begin
               match op, rn, op2 with
+              | Arm2.ADD, 15, Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, k))
+                when k >= 5 && (v = Top || unbounded v) ->
+                (* into one of a run of blocks of 2^k bytes that follows
+                   (add pc,pc,rX,lsl #k: an unrolled loop entered part way
+                   through, each block padded to the same size): every
+                   block start up to the first that doesn't hold code (to its
+                   end, or to a transfer it always takes: the loop's last
+                   block may end in its exit) *)
+                let size = 1 lsl k in
+                let block_ok b =
+                  let rec ok x = x >= b + size ||
+                                 (Image.inside img x &&
+                                  (let i = Image.decode img x in
+                                   Arm2.plausible i && ((Arm2.always i && Arm2.writes_pc i) || ok (x + 4)))) in
+                  ok b in
+                let rec starts b n acc = if n < 256 && block_ok b then starts (b + size) (n + 1) (b :: acc) else acc in
+                (match starts (a + 8) 0 [] with
+                 | [] -> Hashtbl.replace t.follow a (); goto a (a + 8) st
+                 | bs -> jump a st (Consts (IS.of_list bs)))
               | Arm2.ADD, 15, Arm2.Reg _ when v = Top || unbounded v ->
                 (* computed jump into the code that follows (add pc,pc,rX
                    with rX unknown, e.g. a Duff's device): assume rX >= 0 *)
@@ -2009,6 +2047,7 @@ let to_json ?(extra = []) t ~entries oc =
     (List.map (fun a -> Printf.sprintf "[%d,%s]" a (json_ints (IS.elements (Hashtbl.find t.ret_sites a))))
        (keys t.ret_sites)));
   p "\"assumed_returns\":%s,\n" (json_ints (keys t.assumed));
+  p "\"extern_calls\":%s,\n" (json_ints (keys extern_targets));
   p "\"assumed_balanced\":%s,\n" (json_ints (keys t.balanced));
   p "\"promoted\":%s,\n" (json_ints (keys t.promoted));
   p "\"unresolved\":%s,\n" (json_ints (keys t.unresolved));

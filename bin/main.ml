@@ -31,6 +31,9 @@ entry points (BASE, or --exec, for an absolute; the header's for a module):
   --entry ADDR      another entry point (repeatable)
   --roots FILE      more entry points, one address per line, '#' comments (repeatable);
                     e.g. tools/gap_roots.py's, from a recompiled program's --trace-gaps run
+  --extern FROM-TO  code of another image there (repeatable): calls into it return, with
+                    r0-r12 unknown; their targets are listed (extern_calls) as entry
+                    points for that image's analysis
 
 analysis (the core always runs: returns and stack through summaries, constant
 jumps, OS_WriteS, hand-linked calls, stack balance):
@@ -146,6 +149,11 @@ let parse_opts ~what rest =
     | "--module" :: r -> o.modl <- true; go r
     | "--entry" :: a :: r -> o.extra <- int_of_hex a :: o.extra; go r
     | "--roots" :: f :: r -> o.extra <- List.rev_append (read_roots f) o.extra; go r
+    | "--extern" :: x :: r ->
+      (match String.split_on_char '-' x with
+       | [ lo; hi ] -> S1.externs := (int_of_hex lo, int_of_hex hi) :: !S1.externs
+       | _ -> usage ());
+      go r
     | "--exec" :: a :: r -> o.exec <- Some (int_of_hex a); go r
     | "--global-r12" :: r -> S1.set_feature "global-r12" true; go r
     | "-o" :: f :: r -> o.out <- Some f; go r

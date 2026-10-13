@@ -138,7 +138,11 @@ let always i = i.cond = AL
 let is_undefined i = match i.kind with Undefined _ -> true | _ -> false
 
 (* Plausible as real ARM2/ARM3 code (independently of the condition):
-   defined; coprocessor instructions only for the FPA (cp1, cp2); and no
+   defined; coprocessor instructions only for the FPA (cp1, cp2) and ARM3's
+   cache controller (MRC/MCR p15: a program telling an ARM3 from an ARM2.
+   On an ARM2 it traps to the undefined instruction handler, which returns
+   for the probe much as the ARM3 path does, so the flow is taken to fall
+   through); and no
    encodings an assembler never produces even though the CPU would execute
    them: should-be-zero fields that aren't (rn of mov/mvn, rd of the test
    ops other than the P forms), empty register lists, writeback to r15,
@@ -146,6 +150,7 @@ let is_undefined i = match i.kind with Undefined _ -> true | _ -> false
 let implausible_reason i =
   match i.kind with
   | Undefined why -> Some why
+  | Cop { cp = 15; ck = (Mrc | Mcr); _ } -> None
   | Cop { cp; _ } when cp <> 1 && cp <> 2 -> Some (Printf.sprintf "coprocessor %d" cp)
   | Dp { op = (MOV | MVN); rn; _ } when rn <> 0 -> Some "mov/mvn with rn <> 0"
   | Dp { op; rd; _ } when is_test op && rd <> 0 && rd <> 15 -> Some "test op with rd <> 0"
