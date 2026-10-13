@@ -349,3 +349,9 @@ the old behaviour. Left for a pass of its own (Darkwood, October 2026):
   other places S1 asks Image.inside (constant jumps, tables, address-taken
   code) still treat an extern range inside the image (an overlay over a
   stale part of it) as the image's own. Nothing needed it yet.
+- libroger turns the OS pointer off on every mode change. RISC OS may well
+  leave it as it was (games started from the desktop hide its pointer
+  with OS_Byte 106,0 after their mode change; Darkwood relies on it
+  staying on). Darkwood opts out (roger_config.desktop_pointer); making it
+  the default would show a pointer in games that never asked for one, so
+  check against RISC OS's sources and each game's headless runs first.
