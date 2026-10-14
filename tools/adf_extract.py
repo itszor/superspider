@@ -24,7 +24,7 @@ def walk(files, path):
         else:
             os.makedirs(path, exist_ok=True)
             load = getattr(f, 'load_address', 0) & 0xffffffff
-            exe = getattr(f, 'exec_address', 0) & 0xffffffff
+            exe = getattr(f, 'execution_address', 0) & 0xffffffff
             fname = p + ',%08x-%08x' % (load, exe)
             open(fname, 'wb').write(f.data)
 

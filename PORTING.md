@@ -60,14 +60,14 @@ loads it to. Run `superspider` with no arguments for the full option list.
 
 - Dumps are usually ADFS .adf files (E format, 800K). Run
   `adf_extract.py game.adf extracted`. Flux-level dumps (HxC .hfe:
-  Darkwood) go through `hfe.py` first; weave.py does that itself. Note
-  that adf_extract.py's names carry the load address but not the
-  execution address (it reads a field ADFSlib doesn't have, so it's
-  always 0): take an absolute's entry from elsewhere (Gyrinus II's MCode,
-  Darkwood's MCMain1). Keep the ',load-exec' suffixes:
-  they are the only record of where an absolute file loads and starts. An
-  `ff8` type, or a load address of &8000 with matching exec, is a plain
-  absolute. `fffff8xx`-style values are filetype-stamped (no address).
+  Darkwood) go through `hfe.py` first; weave.py does that itself. Keep
+  the ',load-exec' suffixes: they are the only record of where an
+  absolute file loads and starts (Gyrinus II's MCode,
+  `,0007f800-0008bd08`). An `ff8` type, or a load address of &8000 with
+  matching exec, is a plain absolute. `fffff8xx`-style values are
+  filetype-stamped (no address; the exec word is then the low part of
+  the date stamp, so it differs from one copy of a disc to another:
+  tools that look files up should ignore the suffix where they can).
 - Old-map (D format) discs: ADFSlib reads them (Starch), and pads a dump
   cut short after its last used sector to the size its map gives.
   Galactic Dan's `extracted/tools/adfsd.py` is another reader.
@@ -201,7 +201,13 @@ fervour/) lists what it needed. The patterns so far:
 - setjmp/longjmp stacks
 - self-modified transfers
 - unrolled loops entered part way through with add pc,pc,rX,lsl #k
-  (k >= 5: blocks of 2^k bytes; Darkwood's Gouraud routines)
+  (k >= 3: blocks of 2^k bytes; Darkwood's Gouraud routines, Galactic
+  Dan's byte copies)
+- span fills entered backwards: add lr,pc,#k ; sub pc,lr,rX,<shift> into
+  a run of identical blocks ending at lr (Darkwood's MCMain2)
+- computed jumps on a byte's bits (ldrb r0 ; add pc,pc,r0,lsr #4): a
+  byte load is 0-255, and a jump's targets are word-aligned, as an ARM2
+  takes them (Saloon Cars)
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to
@@ -350,38 +356,10 @@ analyses or extracted trees look like, so it needs `make regen` (and the
 headless regression runs) in every game, and fixes where a game depends on
 the old behaviour. Left for a pass of its own (Darkwood, October 2026):
 
-- Backward computed jumps into a run of instructions: `sub pc, rN, rM,
-  <shift>` with rN a known constant (`add lr, pc, #k` before it) and rM
-  unknown jumps back into the periodic run of words that ends at rN (a
-  span fill: Darkwood's MCMain2 at &67384, into 16 stmias ending at
-  &673C4). S1 only follows the forward form (`add pc, pc, rX`); Darkwood
-  lists those entries by hand in analysis/mcmain2.roots. The encoding is
-  in most other games' images (as code or as data that decodes to it), so
-  their code word counts would change.
-- adf_extract.py loses execution addresses: it reads `exec_address`, but
-  ADFSlib's attribute is `execution_address`, so every name ends
-  `-00000000`. The fix is one word, but it renames extracted files, and
-  these recipes name them with the old suffix: fervour (tools/images.py),
-  gyrinus-ii (tools/images.py, recomp/game.c, README.md), lemmings
-  (recomp/Makefile, recomp/game.c, tools/unpack_lemboot.py),
-  stunt-racer-2000 (tools/images.py, tools/cload.c, recomp/Makefile),
-  twinworld (analysis/run.sh, recomp/Makefile, recomp/game.c). Fix them
-  with it (or look files up ignoring the suffix); then Gyrinus II's and
-  Darkwood's entry points could come from the names.
-- Unrolled-loop blocks (`add pc, pc, rX, lsl #k`, all 2^k-byte blocks as
-  entries) only for k >= 5. Galactic Dan has k = 3 jumps (two-instruction
-  blocks), still handled the old way (fall into the next word); lowering
-  the threshold would change its analysis.
 - --extern ranges are consulted for b/bl targets and plain flow only; the
   other places S1 asks Image.inside (constant jumps, tables, address-taken
   code) still treat an extern range inside the image (an overlay over a
   stale part of it) as the image's own. Nothing needed it yet.
-- Byte loads as values 0-255: S1 takes an ldrb's result as unknown, so a
-  computed jump on a byte's bits (Saloon Cars' CODE at &34440: ldrb r0;
-  ... add pc, pc, r0, lsr #4, four branches) is unresolved, and the game
-  lists its targets in analysis/code.roots. Knowing the range (and taking
-  a jump's targets word-aligned, as an ARM2 does) would resolve it, but
-  changes value analysis in every image.
 - libroger turns the OS pointer off on every mode change. RISC OS may well
   leave it as it was (games started from the desktop hide its pointer
   with OS_Byte 106,0 after their mode change; Darkwood relies on it

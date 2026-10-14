@@ -127,6 +127,9 @@ let addr_mask = 0x3FFFFFC
 
 let const c = Consts (IS.singleton (c land m32))
 
+(* what a byte load gives when the byte isn't known *)
+let any_byte = Range (0, 255, 1)
+
 let rec gcd a b = if b = 0 then abs a else gcd b (a mod b)
 
 let mk_range lo hi step =
@@ -720,9 +723,9 @@ let image_word ?(record = true) t a ~byte =
       if not (List.mem t.cur_site l) then Hashtbl.replace t.data_reads w (t.cur_site :: l)
     end;
     match Hashtbl.find_opt t.var_known w with
-    | Some v -> if byte then Top else v
+    | Some v -> if byte then any_byte else v
     | None ->
-      if Hashtbl.mem t.vars w then Top
+      if Hashtbl.mem t.vars w then (if byte then any_byte else Top)
       else begin
         if record && not (Hashtbl.mem t.code w) then Hashtbl.replace t.data w "literal";
         if byte then const (Image.byte t.img a) else const (Image.word t.img w)
@@ -798,18 +801,18 @@ let load_word t st av ~byte =
   | Consts s when IS.cardinal s = 1 ->
     let a = IS.choose s in
     (match IM.find_opt (a land lnot 3) st.amem with
-     | Some v -> if byte then Top else v
+     | Some v -> if byte then any_byte else v
      | None -> image_word t a ~byte)
   | Consts s when IS.cardinal s <= max_consts ->
     (* a few possible addresses: any of their values (an approximation, so
        not taken as evidence that these words are data) *)
     IS.fold (fun a acc ->
         let v = match IM.find_opt (a land lnot 3) st.amem with
-          | Some v -> if byte then Top else v
+          | Some v -> if byte then any_byte else v
           | None -> image_word ~record:false t a ~byte in
         match acc with None -> Some v | Some x -> Some (join_v x v)) s None
     |> Option.value ~default:Top
-  | Range _ when not features.tables -> if byte then Range (0, 255, 1) else Top
+  | Range _ when not features.tables -> if byte then any_byte else Top
   | Range (lo, hi, step) when byte && range_count lo hi step <= max_consts ->
     let addrs = List.init (range_count lo hi step) (fun k -> map_addr t (lo + k * step)) in
     if List.for_all (fun a -> Image.inside t.img (a land lnot 3) && not (Hashtbl.mem t.vars (a land lnot 3))) addrs
@@ -819,7 +822,7 @@ let load_word t st av ~byte =
           if not (Hashtbl.mem t.code w) then Hashtbl.replace t.data w "table";
           if byte then Image.byte t.img a else Image.word t.img w) addrs in
       Consts (IS.of_list vals)
-    end else if byte then Range (0, 255, 1) else Top
+    end else if byte then any_byte else Top
   | Range (lo, hi, step) when not byte && Image.inside t.img lo ->
     (* a loose bound (e.g. a byte index): only a limit for the content scan *)
     Tab { tbase = lo; more = []; stride = step; tadd = 0; tfield = None;
@@ -841,7 +844,7 @@ let load_word t st av ~byte =
        let cnt = range_count 0 (hi - lo) step in
        Tab { tbase = b; more; stride = step; tadd = 0; tfield = None; limit = if cnt > max_enum then None else Some cnt })
   | Tab tb when not byte && features.tables && tb.tfield = None -> Obj (tb, 0)
-  | _ -> if byte then Range (0, 255, 1) else Top
+  | _ -> if byte then any_byte else Top
 
 (* Absolute-address memory is tracked for stack traffic (base register
    SP), i.e. a stack whose pointer is a known constant, and (with the
@@ -1036,6 +1039,31 @@ let detect_copy_loop t head tail (entry : state) =
        if not (List.mem c t.copies) then t.copies <- c :: t.copies
      | _ -> ())
   | _ -> ()
+
+(* The block starts of a run of identical blocks (p words each, p at most
+   4, the smallest that repeats) ending at c, after the jump at a: at least
+   min_span_blocks of them, none with a transfer. [] if there's no such run. *)
+let min_span_blocks = 4
+
+let span_run img a c =
+  let block p x = List.init p (fun k -> Image.word img (x + 4 * k)) in
+  let code_block p x =
+    List.for_all (fun k ->
+        let y = x + 4 * k in
+        Image.inside img y && y > a
+        && (let i = Image.decode img y in Arm2.plausible i && i.cond <> Arm2.NV && not (Arm2.writes_pc i)))
+      (List.init p Fun.id) in
+  let run p =
+    let size = 4 * p in
+    if not (code_block p (c - size)) then []
+    else
+      let b = block p (c - size) in
+      let rec go x acc = if code_block p x && block p x = b then go (x - size) (x :: acc) else acc in
+      go (c - size) [] in
+  let rec first p =
+    if p > 4 then []
+    else match run p with l when List.length l >= min_span_blocks -> l | _ -> first (p + 1) in
+  if Image.inside img c && c > a then first 1 else []
 
 let max_inline = 16
 
@@ -1249,7 +1277,7 @@ and analyse_function t f =
        summary := add_exit !summary { pc = v; st; at = a }
      | (Range _ | Tab _) when not features.tables -> unknown_jump a st
      | Range (lo, _, step) when not (unbounded v)
-                                && Image.inside img lo && step land 3 = 0
+                                && Image.inside img (lo land addr_mask)
                                 && (match (Image.decode img a).kind with
                                     | Arm2.Dp { op = Arm2.ADD; rd = 15; op2 = Arm2.Reg _; _ } -> true
                                     | Arm2.Dp { op = Arm2.ADD; rd = 15; rn; op2 = Arm2.Imm _; _ } -> rn <> 15
@@ -1261,9 +1289,14 @@ and analyse_function t f =
           small values (a byte loaded into PC) is not one. Targets must look
           like code: plausible, not data, not a word below &10000 (andeq
           r0,r0,<small> - table entries, zeros) *)
+       (* An ARM2 ignores the low two bits of a value written to PC: a range
+          stepping by less than a word (add pc,pc,r0,lsr #4 with r0 a byte:
+          Saloon Cars' &34440) goes to each word it covers *)
+       let step = if step land 3 = 0 then step else 4 in
        (match elements v max_enum with
         | Some l ->
           (* (a range widened to the image's end may reach just past it) *)
+          let l = List.sort_uniq compare (List.map (fun x -> x land addr_mask) l) in
           let l = List.filter (Image.inside img) l in
           let ok x =
             let i = Image.decode img x in
@@ -1705,21 +1738,36 @@ and analyse_function t f =
             if rd = 15 then begin
               match op, rn, op2 with
               | Arm2.ADD, 15, Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, k))
-                when k >= 5 && (v = Top || unbounded v) ->
+                when k >= 3 && (v = Top || unbounded v) ->
                 (* into one of a run of blocks of 2^k bytes that follows
                    (add pc,pc,rX,lsl #k: an unrolled loop entered part way
-                   through, each block padded to the same size): every
-                   block start up to the first that doesn't hold code (to its
-                   end, or to a transfer it always takes: the loop's last
-                   block may end in its exit) *)
+                   through, each block padded to the same size). Blocks of
+                   32 bytes or more (k >= 5: Darkwood's Gouraud routines,
+                   each step with its own offsets): every block start up to
+                   the first that doesn't hold code (to its end, or to a
+                   transfer it always takes: the loop's last block may end
+                   in its exit). Smaller ones (two or four instructions:
+                   Galactic Dan's ldrb/strb pairs at &9040) repeat one step:
+                   the blocks the same as the first, and the code just after
+                   them (none of them done) *)
                 let size = 1 lsl k in
+                let insn_ok x = Image.inside img x && Arm2.plausible (Image.decode img x) in
                 let block_ok b =
                   let rec ok x = x >= b + size ||
-                                 (Image.inside img x &&
+                                 (insn_ok x &&
                                   (let i = Image.decode img x in
-                                   Arm2.plausible i && ((Arm2.always i && Arm2.writes_pc i) || ok (x + 4)))) in
+                                   (Arm2.always i && Arm2.writes_pc i) || ok (x + 4))) in
                   ok b in
-                let rec starts b n acc = if n < 256 && block_ok b then starts (b + size) (n + 1) (b :: acc) else acc in
+                let words b = List.init (size / 4) (fun j -> Image.word img (b + 4 * j)) in
+                let same_step b =
+                  List.for_all (fun j -> insn_ok (b + 4 * j) && not (Arm2.writes_pc (Image.decode img (b + 4 * j))))
+                    (List.init (size / 4) Fun.id)
+                  && words b = words (a + 8) in
+                let rec starts b n acc =
+                  if k >= 5 then (if n < 256 && block_ok b then starts (b + size) (n + 1) (b :: acc) else acc)
+                  else if n < 1024 && same_step b then starts (b + size) (n + 1) (b :: acc)
+                  else if n >= 2 && insn_ok b then b :: acc
+                  else [] in
                 (match starts (a + 8) 0 [] with
                  | [] -> Hashtbl.replace t.follow a (); goto a (a + 8) st
                  | bs -> jump a st (Consts (IS.of_list bs)))
@@ -1728,6 +1776,17 @@ and analyse_function t f =
                    with rX unknown, e.g. a Duff's device): assume rX >= 0 *)
                 Hashtbl.replace t.follow a ();
                 goto a (a + 8) st
+              | Arm2.SUB, rn, Arm2.Reg _ when rn <> 15 && v = Top && single st.regs.(rn) <> None ->
+                (* back into a run of identical blocks that ends at rN (add
+                   lr,pc,#k ; sub pc,lr,r11,asr #3: a span fill entered part
+                   way through, Darkwood's &67384 into 15 stmias): every
+                   block start, and rN *)
+                let c = Option.get (single st.regs.(rn)) land addr_mask in
+                (match span_run img a c with
+                 | [] -> jump a st v
+                 | bs ->
+                   jump a st (Consts (IS.of_list (c :: bs)));
+                   Hashtbl.replace t.tables a ("run of blocks before rN", 1 + List.length bs))
               | _ -> jump a st v
             end
             else goto a next (set_reg st rd v)
@@ -1741,7 +1800,7 @@ and analyse_function t f =
             | x, y -> map2_consts ( * ) x y in
           let v = if acc then add_v v st.regs.(rn) else v in       (* mla: + rn *)
           goto a next (set_reg st rd v)
-        | Arm2.Swp { rd; _ } -> goto a next (set_reg st rd Top)
+        | Arm2.Swp { rd; byte; _ } -> goto a next (set_reg st rd (if byte then any_byte else Top))
         | Arm2.Mem { load; byte; pre; up; wb; rd; rn; off } ->
           let base = reg_val st a rn in
           let offv = match off with
