@@ -1604,7 +1604,8 @@ and analyse_function t f =
                               (List.filter (fun (k, _) -> match st.regs.(13) with
                                    | Consts s -> IS.exists (fun c -> abs (k - c) < 64) s | _ -> false)
                                   (IM.bindings st.amem))));
-    if i.cond <> Arm2.NV && not (Arm2.plausible i) then
+    if i.cond <> Arm2.NV && not (Arm2.plausible i)
+       && not (Arm2.sbz_only i && Hashtbl.mem t.code (a - 4) && Arm2.runs_on (Image.decode img (a - 4))) then
       Hashtbl.replace t.problems a ("invalid: " ^ Arm2.to_string i)
     else begin
       Hashtbl.replace t.code a ();

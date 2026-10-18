@@ -8,7 +8,8 @@
 #include <stdlib.h>
 #include "basic_runtime.h"
 
-int32_t A_I, B_I, C_I, D_I, E_I, F_I, G_I, H_I;
+int32_t A_I, B_I, C_I, D_I, E_I, F_I, G_I, H_I, I_I, J_I, K_I, L_I, M_I,
+    N_I, O_I, P_I, Q_I, R_I, S_I, T_I, U_I, V_I, W_I, X_I, Y_I, Z_I;
 int bas_dim_clear;
 unsigned bas_sys_idle;
 
@@ -60,6 +61,15 @@ S get_s(uint32_t a) { return get_until(a, 0); }
 S get_s0(uint32_t a) { return get_until(a, 1); }
 void put_s(uint32_t a, S v) { int n = len(v); memcpy(MEM + a, v.s, n); MEM[a + n] = 13; }
 S print_num(double v) { S r; snprintf(r.s, sizeof r.s, "%10s", str(v).s); return r; }
+S mid_set(S a, int p, int n, S b)
+{
+    int l = len(a), m = len(b);
+    if (p < 1 || p > l) return a;
+    if (n < 0 || n > m) n = m;
+    if (n > l - p + 1) n = l - p + 1;        /* (the string's length doesn't change) */
+    memcpy(a.s + p - 1, b.s, n);
+    return a;
+}
 
 /* --- arrays */
 #define ARRAY(T, t)                                                             \
@@ -133,12 +143,15 @@ void bas_error(int32_t err, const char *msg)
     longjmp(bas_h->jb, 1);
 }
 
-/* --- DATA */
+/* --- DATA: the program's (bas_data, or the CHAINed program's) */
 int data_p;
+extern const char *const bas_data[] __attribute__((weak));
+static const char *const *datap;
 static const char *read_item(void)
 {
-    if (!bas_data[data_p]) bas_error(42, "Out of DATA");
-    return bas_data[data_p++];
+    const char *const *d = datap ? datap : bas_data;
+    if (!d[data_p]) bas_error(42, "Out of DATA");
+    return d[data_p++];
 }
 int32_t read_i(void) { return (int32_t)atof(read_item()); }
 double read_r(void) { return atof(read_item()); }
@@ -165,9 +178,12 @@ uint32_t swi_number(const char *name)
     if (VF) { fprintf(stderr, "SWI %s not known\n", name); bas_error(486, "SWI name not known"); }
     return R[0];
 }
+/* blocks the runtime DIMs for itself when first needed (dropped with the
+ * heap when a program CHAINs another) */
+static uint32_t scratch_buf[10], osword_blk, time_out, call_stack;
 uint32_t roger_scratch_n(int k, const char *s)
 {
-    static uint32_t buf[10];
+    uint32_t *buf = scratch_buf;
     if (!buf[k]) buf[k] = dim(256);
     snprintf((char *)MEM + buf[k], 256, "%s", s);
     return buf[k];
@@ -202,6 +218,8 @@ void line(int x1, int y1, int x2, int y2) { plot(4, x1, y1); plot(5, x2, y2); }
 void cls(void) { vdu(12, -1); }
 void mode(int m) { vdu(22, m, -1); }
 int bas_mode(void) { swi_regs(0x06, 135, 0, 0); return R[2]; }
+int bas_pos(void) { swi_regs(0x06, 134, 0, 0); return R[1]; }      /* OS_Byte 134: the text cursor */
+int bas_vpos(void) { swi_regs(0x06, 134, 0, 0); return R[2]; }
 void origin(int x, int y) { vdu(29, -1); vduw(x); vduw(y); }
 void off(void) { vdu(23, 1, 0, 0, 0, 0, 0, 0, 0, 0, -1); }
 int (*bas_cli)(const char *c);
@@ -217,9 +235,8 @@ void mouse(int32_t *x, int32_t *y, int32_t *b)
 }
 static uint32_t osword_block(void)
 {
-    static uint32_t blk;
-    if (!blk) blk = dim(16);
-    return blk;
+    if (!osword_blk) osword_blk = dim(16);
+    return osword_blk;
 }
 void mouse_to(int x, int y)
 {
@@ -258,8 +275,8 @@ int32_t time_get(void) { roger_idle(2000); return monotonic() - time_base; }
 void time_set(int32_t t) { time_base = monotonic() - t; }
 S time_s(void)
 {
-    static uint32_t out;
-    if (!out) out = dim(64);
+    if (!time_out) time_out = dim(64);
+    uint32_t out = time_out;
     uint32_t b = osword_block();               /* OS_Word 14,3: the 5-byte real time */
     PB(b) = 3;
     swi_regs(0x07, 14, b, 0);
@@ -282,11 +299,10 @@ void voices(int n) { R[0] = n; R[1] = R[2] = R[3] = R[4] = 0; roger_swi(0x20000 
 /* --- CALL: R0-R7 = A%-H%, a stack of BASIC's own, back through R14 */
 void call(uint32_t addr)
 {
-    static uint32_t stack;
-    if (!stack) stack = dim(8192) + 8192;
+    if (!call_stack) call_stack = dim(8192) + 8192;
     int32_t v[8] = {A_I, B_I, C_I, D_I, E_I, F_I, G_I, H_I};
     for (int k = 0; k < 8; k++) R[k] = v[k];
-    R[13] = stack;
+    R[13] = call_stack;
     roger_call_program(addr, ROGER_HANDLER_RET);
 }
 int32_t usr(uint32_t addr) { call(addr); return R[0]; }
@@ -338,3 +354,114 @@ S bas_input_s(int32_t h)
 }
 
 void quit(void) { roger_finish("QUIT"); }
+
+/* --- the assembler: what depends on the operands' values. Errors only
+ * with OPT's bit 1 (a first pass meets labels not yet set) */
+int bas_opt;
+void asm_opt(int v) { bas_opt = v; }
+static void asm_out(uint32_t v, int n)
+{
+    uint32_t a = bas_opt & 4 ? (uint32_t)O_I : (uint32_t)P_I;
+    for (int k = 0; k < n; k++) MEM[a + k] = (uint8_t)(v >> 8 * k);
+    P_I += n;
+    if (bas_opt & 4) O_I += n;
+}
+static void asm_err(int n, const char *msg) { if (bas_opt & 2) bas_error(n, msg); }
+void asm_w(uint32_t w) { asm_out(w, 4); }
+void asm_h(int v) { asm_out((uint32_t)v, 2); }
+void asm_b(int v) { asm_out((uint32_t)v, 1); }
+void asm_s(S s) { for (int k = 0; s.s[k]; k++) asm_out((uint8_t)s.s[k], 1); }
+void asm_align(void) { while (P_I & 3) asm_out(0, 1); }
+uint32_t asm_imm(int32_t v)
+{
+    uint32_t u = (uint32_t)v;
+    for (int r = 0; r < 16; r++) {               /* v = imm8 ROR 2r */
+        uint32_t x = r ? (u << 2 * r | u >> (32 - 2 * r)) : u;
+        if (x < 256) return 1u << 25 | (uint32_t)r << 8 | x;
+    }
+    asm_err(1, "Bad immediate constant");
+    return 1u << 25;
+}
+uint32_t asm_shift(int type, int32_t n)
+{
+    if (n == 32 && (type == 1 || type == 2)) n = 0;  /* LSR/ASR #32 */
+    if (n < 0 || n > 31) { asm_err(1, "Bad shift"); n = 0; }
+    return (uint32_t)n << 7;
+}
+uint32_t asm_branch(int32_t to)
+{
+    int32_t off = to - (P_I + 8);
+    if (off & 3 || off < -(1 << 25) || off >= 1 << 25) asm_err(1, "Branch out of range");
+    return (uint32_t)(off >> 2) & 0xFFFFFF;
+}
+uint32_t asm_off12(int32_t off)
+{
+    uint32_t u = off < 0 ? 0 : 1u << 23, a = (uint32_t)(off < 0 ? -off : off);
+    if (a > 4095) { asm_err(1, "Bad address offset"); a &= 4095; }
+    return u | a;
+}
+uint32_t asm_pcrel(int32_t to) { return asm_off12(to - (P_I + 8)); }
+void asm_adr(int cond, int rd, int32_t to)
+{
+    int32_t off = to - (P_I + 8);
+    uint32_t op = off < 0 ? 2 : 4;                   /* SUB or ADD rd, PC, #|off| */
+    asm_w((uint32_t)cond << 28 | op << 21 | 15 << 16 | (uint32_t)rd << 12 | asm_imm(off < 0 ? -off : off));
+}
+
+/* --- programs that CHAIN one another */
+const struct bas_program *bas_current;
+const struct bas_program *(*bas_chain_hook)(const char *name);
+static const struct bas_program *const *programs;
+static jmp_buf chain_jb;
+jmp_buf bas_main_jb;
+int bas_main_line, bas_main_undo;
+
+/* does RISC OS name n end with the components in tail? (any case) */
+static int ends_with(const char *n, const char *tail)
+{
+    size_t ln = strlen(n), lt = strlen(tail);
+    return ln >= lt && !strcasecmp(n + ln - lt, tail) && (ln == lt || strchr(".:", n[ln - lt - 1]));
+}
+
+void bas_chain(S name)
+{
+    char n[256];
+    uint32_t b = dim(256), out = dim(256);           /* (the heap goes with the program) */
+    put_s(b, name);
+    R[0] = b; R[1] = out; R[2] = 255;
+    roger_swi(0x20027);                              /* XOS_GSTrans: <Disc2>.X */
+    snprintf(n, sizeof n, "%s", VF ? name.s : get_s0(out).s);
+    const struct bas_program *p = bas_chain_hook ? bas_chain_hook(n) : NULL;
+    for (int k = 0; !p && programs && programs[k]; k++)
+        if (ends_with(n, programs[k]->name)) p = programs[k];
+    roger_log("basic_chain", "s", n, (int)strlen(n));
+    if (!p) bas_error(214, "File not found");
+    bas_current = p;
+    longjmp(chain_jb, 1);
+}
+
+void bas_run(const struct bas_program *const *progs, const struct bas_program *first)
+{
+    programs = progs;
+    bas_current = first;
+    setjmp(chain_jb);
+    /* NEW, LOAD, RUN: the program at PAGE, its heap from TOP; A%-Z% kept */
+    nundo = 0;                                       /* (LOCALs aren't restored) */
+    bas_h = NULL;
+    data_p = 0;
+    datap = bas_current->data;
+    bas_lomem = ((uint32_t)bas_page + bas_current->size + 3) & ~3u;
+    memset(scratch_buf, 0, sizeof scratch_buf);
+    osword_blk = time_out = call_stack = 0;
+    bas_line = 0;
+    bas_current->clear();
+    bas_current->main();
+    roger_finish("program ended");
+}
+
+void bas_goto_main(int line)
+{
+    nundo = bas_main_undo;                           /* the PROC's frame dropped, not undone */
+    bas_main_line = line;
+    longjmp(bas_main_jb, 1);
+}

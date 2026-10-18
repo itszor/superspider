@@ -4,7 +4,14 @@ whose program is (partly) BASIC. The C calls the BASIC runtime,
 runtime/basic_runtime.{h,c} (VDU, SWIs, CALL into translated code, strings,
 files, errors), which the game links with it.
 
-Usage: bas2c.py PROGRAM OUT.c
+Usage: bas2c.py [--name N [--riscos NAME]] PROGRAM OUT.c
+
+With --name, one of several programs that CHAIN one another (Enter the
+Realm): its symbols are static but bas_prog_N, a struct bas_program for the
+runtime's bas_run() - NAME the RISC OS name a CHAIN finds it by (its last
+components, e.g. REALM2.X), its size (for TOP), its DATA, and a function
+that unsets its variables (a program CHAINed again starts afresh). A%-Z%
+are the runtime's, kept across CHAIN as BASIC keeps them.
 
 Semantics kept from BASIC:
 - PROC/FN parameters and LOCAL variables are dynamically scoped globals,
@@ -26,6 +33,17 @@ Semantics kept from BASIC:
   its ENDPROC is BASIC's "Not in a procedure"). One that carries on into
   the PROC's next line stays a setjmp in the PROC, good while it runs
   (Stunt Racer's menu loop).
+- GOTO from the main program to lines after a PROC (DefKeys' 1330, past
+  PROCK's ENDPROC) enters that PROC's group there, as from a top-level
+  handler; GOTO from a PROC/FN into the main program (QUICK's PROCP)
+  leaves it (bas_goto_main: a longjmp to the main program, its LOCALs as
+  they are). A DEF line met inside a loop of the routine before it is
+  passed over, as BASIC passes over it (its routine isn't translated). A
+  call of a PROC that isn't defined is BASIC's error when it's reached.
+- The assembler ([ ... ]) is translated by basasm.py: C that assembles at
+  run time, at P%, with the operands' values then (labels are variables).
+  A statement it can't translate is left to the game's bas_asm(text).
+- CHAIN (bas_chain), PAGE=, MID$()=, ON ERROR OFF, VPOS/POS.
 Names: x% -> x_I, x -> x_R, x$ -> x_S; arrays x%() -> x_AI, x() -> x_AR,
 x$() -> x_AS; PROCx -> PROC_x, FNx -> FN_x; a backtick becomes _Q_.
 """
@@ -35,6 +53,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import detok  # noqa: E402  (its keyword tables)
+import basasm  # noqa: E402  (the assembler)
 
 KW = dict((k, v) for k, v in detok.T.items() if v)
 KW[0x7F] = 'OTHERWISE'
@@ -47,6 +66,8 @@ NAMECH = re.compile(rb'[A-Za-z0-9_`]')
 class Tok:
     def __init__(self, kind, val, line):
         self.kind, self.val, self.line = kind, val, line   # kw, id, num, str, op, nl, star, data
+        self.gap = True                  # preceded by a space (or starts its line): the assembler's
+                                         # mnemonics are split into tokens (MOVEQ is MOVE, Q)
 
     def __repr__(self):
         return '%s:%r' % (self.kind, self.val)
@@ -60,9 +81,13 @@ def lex(data):
         toks.append(Tok('nl', num, num))
         while i < len(b):
             c = b[i]
+            n0, sp = len(toks), i == 0 or b[i - 1] == 0x20
             if c == 0x20:
                 i += 1
-            elif c == ord('*') and (toks[-1].kind == 'nl' or toks[-1].val in (':', 'THEN', 'ELSE')):
+                continue
+            # a * command starts a statement: after DEF PROCname too
+            elif c == ord('*') and (toks[-1].kind == 'nl' or toks[-1].val in (':', 'THEN', 'ELSE') or
+                                    (len(toks) > 2 and toks[-2].val == 'PROC' and toks[-3].val == 'DEF')):
                 toks.append(Tok('star', b[i + 1:].decode('latin-1').rstrip(), num))
                 break
             elif c == 0x22:
@@ -130,6 +155,10 @@ def lex(data):
                 else:
                     toks.append(Tok('op', chr(c), num))
                     i += 1
+            for t in toks[n0 + 1:]:
+                t.gap = False
+            if len(toks) > n0:
+                toks[n0].gap = sp
         p += ln
     toks.append(Tok('nl', None, None))
     return toks
@@ -152,6 +181,9 @@ class Fail(Exception):
     pass
 
 
+basasm.Fail = Fail
+
+
 class Trans:
     def __init__(self, toks, fntypes, lenient=False):
         self.lenient = lenient
@@ -166,6 +198,7 @@ class Trans:
         self.cond_loops = set()   # loops opened inside an IF's branch
         self.top_handlers = []    # (C body, routine) of ON ERRORs in PROCs/FNs
         self.cur_routine = 0      # 0 the main program, k the k'th DEF
+        self.main_entries = set() # lines of the main program a PROC/FN GOTOs
         self.owner, r = {}, 0     # line number -> its routine
         for k, t in enumerate(toks):
             if t.kind == 'nl' and t.val is not None:
@@ -435,6 +468,8 @@ class Trans:
             return 'bas_page', 'i'
         if v == 'MODE':
             return 'bas_mode()', 'i'
+        if v in ('VPOS', 'POS'):
+            return 'bas_%s()' % v.lower(), 'i'
         if v in ('OPENIN', 'OPENOUT', 'OPENUP'):
             a, t = self.unary()
             return 'bas_open(%d, %s)' % ({'OPENIN': 0x40, 'OPENOUT': 0x80, 'OPENUP': 0xC0}[v], a), 'i'
@@ -485,9 +520,14 @@ class Trans:
         out = []
         while True:
             if self.at('nl'):
+                if not inline and self.peek().val is not None and self.at('kw', 'DEF', 1) and self.loops \
+                        and self.cur_routine:
+                    out += self.skip_def()
+                    continue
                 if inline or self.peek().val is None or self.at('kw', 'DEF', 1):
                     return out
                 n = self.next().val
+                self.owner[n] = self.cur_routine
                 out.append(('l_%d: L(%d);' % (n, n)) if n in self.targets else 'L(%d);' % n)
                 continue
             if self.accept('op', ':'):
@@ -499,6 +539,23 @@ class Trans:
                 return out
             out += self.statement()
 
+    def skip_def(self):
+        """A DEF line inside a loop of the routine before it (DefKeys' FNkey:
+        DEFPROCK1 between its REPEAT and UNTIL): BASIC passes over a DEF
+        line it comes to as over a REM, and the routine goes on. The PROC it
+        defines isn't translated: an error if it's called."""
+        n = self.next().val
+        self.owner[n] = self.cur_routine
+        self.expect('kw', 'DEF')
+        kind, name = self.next().val, self.next().val
+        for k in range(len(self.t) - 1):
+            if self.t[k].kind == 'kw' and self.t[k].val == kind and self.t[k + 1].val == name and \
+                    not (k and self.t[k - 1].val == 'DEF'):
+                raise Fail('line %s: %s%s, defined inside a loop, is called' % (n, kind, name))
+        while not self.at('nl'):
+            self.next()
+        return ['L(%d);' % n]
+
     def statement(self):
         tok = self.peek()
         if tok.kind == 'kw':
@@ -506,23 +563,40 @@ class Trans:
             if m:
                 self.next()
                 return m()
-            if tok.val in ('TIME',):
+            if tok.val in ('TIME', 'PAGE'):
                 self.next()
                 self.expect('op', '=')
                 c, t = self.expr()
-                return ['time_set(%s);' % self.toint(c, t)]
+                return [('time_set(%s);' if tok.val == 'TIME' else 'bas_page = %s;') % self.toint(c, t)]
+            if tok.val == 'MID$(':                # MID$(a$, p[, n]) = b$
+                self.next()
+                lv, t = self.lvalue()
+                self.expect('op', ',')
+                a = [self.expr()]
+                if self.accept('op', ','):
+                    a.append(self.expr())
+                self.expect('op', ')')
+                self.expect('op', '=')
+                c, ct = self.expr()
+                return ['%s = mid_set(%s, %s, %s, %s);' % (lv, lv, self.toint(*a[0]),
+                                                          self.toint(*a[1]) if len(a) > 1 else '-1', c)]
             raise Fail('line %s: statement %s' % (tok.line, tok.val))
         if tok.kind == 'star':
             self.next()
             return ['oscli_c(%s);' % cstr(tok.val)]
-        if tok.kind == 'op' and tok.val == '[':   # the assembler: the game's bas_asm() does it
+        if tok.kind == 'op' and tok.val == '[':   # the assembler: basasm.py
             self.next()
-            text = []
-            while not self.at('op', ']'):
-                tok = self.next()
-                text.append(':' if tok.kind == 'nl' else str(tok.val))
-            self.next()
-            return ['bas_asm(%s);' % cstr(' '.join(text))]
+            start = self.p
+            try:
+                return basasm.assemble(self)
+            except Fail as e:                     # (the game's own bas_asm() does it)
+                sys.stderr.write('bas2c: %s: left to bas_asm()\n' % e)
+                self.p, text = start, []
+                while not self.at('op', ']'):
+                    tok = self.next()
+                    text.append(':' if tok.kind == 'nl' else str(tok.val))
+                self.next()
+                return ['bas_asm(%s);' % cstr(' '.join(text))]
         if tok.kind == 'data':
             self.next()
             return []
@@ -567,6 +641,8 @@ class Trans:
     def s_PROC(self):
         name = self.next().val
         args = self.args()
+        if ('PROC', name) not in self.calls:     # BASIC's error when it's reached
+            return ['bas_error(29, "No such FN/PROC");']
         return ['%s(%s);' % (fname('PROC', name), self.callargs('PROC', name, args))]
 
     def s_IF(self):
@@ -712,6 +788,8 @@ class Trans:
 
     def s_ON(self):
         if self.accept('kw', 'ERROR'):
+            if self.accept('kw', 'OFF'):          # BASIC's own handler again
+                return ['bas_h = NULL;']
             local = bool(self.accept('kw', 'LOCAL'))
             if local:
                 self.has_handlers = True
@@ -737,6 +815,10 @@ class Trans:
             k += 1
             if not self.accept('op', ','):
                 return out + ['}']
+
+    def s_CHAIN(self):                           # (bas_run's: the program the name is)
+        c, t = self.expr()
+        return ['bas_chain(%s);' % c]
 
     def s_CALL(self):
         c, t = self.expr()
@@ -1073,6 +1155,7 @@ class Trans:
             params = []
             self.start_func()
             self.cur_routine += 1
+            self.owner[line] = self.cur_routine
             if self.accept('op', '('):            # formal parameters: variables or array elements
                 while True:
                     pname = self.peek().val
@@ -1082,7 +1165,7 @@ class Trans:
                         break
                     self.expect('op', ',')
             self.ret_types, self.cur_fn = set(), name if kind == 'FN' else None
-            body = ['L(%d);' % line] + self.block(())
+            body = [('l_%d: L(%d);' if line in self.targets else 'L(%d);') % ((line,) * (2 if line in self.targets else 1))] + self.block(())
             rts = self.ret_types
             rt = 'v' if 's' in rts and rts - {'s'} else 's' if 's' in rts else 'r' if 'r' in rts else 'i'
             if kind == 'FN':
@@ -1114,10 +1197,10 @@ def fn_eq(tr):
     """'=expr' in an FN body: the return."""
 
 
-def generate(data):
-    toks = lex(data)
+def generate(data, name=None):
     fntypes, settled = {}, False
     for _ in range(6):
+        toks = lex(data)                          # (afresh: the assembler splits tokens)
         tr = Trans(toks, fntypes, lenient=not settled)
         tr.calls = scan_defs(toks)
         orig_statement = tr.statement
@@ -1137,7 +1220,7 @@ def generate(data):
             break
         settled = tr.found_fn == fntypes
         fntypes = dict(tr.found_fn)
-    return emit(tr, toks)
+    return emit(tr, toks, name, len(data))
 
 
 def goto_targets(toks):
@@ -1179,7 +1262,8 @@ def ends_flow(body):
         return False
     x = lines[-1]
     if x != '}':
-        return x in ('goto out;', 'quit();') or x.startswith(('goto l_', '{ ret = ', 'bas_error('))
+        return x in ('goto out;', 'quit();') or x.startswith(('goto l_', '{ ret = ', 'bas_error(', 'bas_chain(',
+                                                             'bas_goto_main('))
     depth, k, elses = 0, len(lines) - 1, []
     while k >= 0:                                # the block's opening line, and its } else {s
         depth += lines[k].count('}') - lines[k].count('{')
@@ -1210,18 +1294,24 @@ def groups_of(tr):
     def union(a, b):
         parent[find(a)] = find(b)
     falls = set()
+    entries = {}
     for k, f in enumerate(tr.funcs):
         name, kind, body = f[0], f[1], f[3]
         for t in GOTO_L.findall('\n'.join(body)):
             o = tr.owner.get(int(t))
             if o != k:
-                if o is None or o == 0 or k == 0:
-                    raise Fail('GOTO %s from %s into %s' % (t, name, 'the main program' if not o else tr.funcs[o][0]))
-                union(k, o)
+                if o is None:
+                    raise Fail('GOTO %s from %s: no such line' % (t, name))
+                if o == 0:                       # out of a PROC into the main program: bas_goto_main
+                    tr.main_entries.add(int(t))
+                elif k == 0:                     # from the main program into lines after a PROC
+                    entries.setdefault(o, set()).add(int(t))
+                else:
+                    union(k, o)
         if kind == 'PROC' and k + 1 < n and tr.funcs[k + 1][1] == 'PROC' and not ends_flow(body):
             falls.add(k)
             union(k, k + 1)
-    entries = {}
+    entries = {find(o): ls for o, ls in entries.items()}
     for body, r in tr.top_handlers:
         for t in GOTO_L.findall('\n'.join(body)):
             o = tr.owner.get(int(t))
@@ -1237,23 +1327,26 @@ def groups_of(tr):
     return groups, entries, falls
 
 
-def emit(tr, toks):
+def emit(tr, toks, progname=None, size=0):
     out = ['/* generated by bas2c.py - do not edit */', '#include <math.h>', '#include <stdlib.h>',
            '#include "basic_runtime.h"', '']
     data = []
     for t in toks:
         if t.kind == 'data':
             data += split_data(t.val)
-    out.append('const char *const bas_data[] = {%s, 0};' % ', '.join(cstr(d) for d in data))
+    out.append('%sconst char *const %s[] = {%s};' % ('static ' if progname else '', 'data_' if progname else 'bas_data',
+                                                    ', '.join([cstr(d) for d in data] + ['0'])))
     out.append('')
+    clear = []                                   # (a program CHAINed again starts with none set)
     for v in sorted(tr.vars):
         c = cname(v)
-        if c in ('A_I', 'B_I', 'C_I', 'D_I', 'E_I', 'F_I', 'G_I', 'H_I'):
+        if re.match(r'[A-Z]_I$', c):            # A%-Z%: the runtime's, kept across CHAIN
             continue
-        resident = re.match(r'[A-Z]_I$', c)          # A%-Z%: visible to the game's own C
-        out.append('%s%s %s;' % ('' if resident else 'static ', CTYPE[vtype(v)], c))
+        out.append('static %s %s;' % (CTYPE[vtype(v)], c))
+        clear.append('%s = %s;' % (c, ZERO[vtype(v)]))
     for a in sorted(tr.arrays):
         out.append('static ARR_%s %s;' % (vtype(a), cname(a, True)))
+        clear.append('free(%s.p); %s.p = NULL;' % ((cname(a, True),) * 2))
     out += tr.globals_extra
     if tr.top_handlers:
         out.append('static HND bas_top;                      /* ON ERRORs set in PROCs/FNs */')
@@ -1261,6 +1354,20 @@ def emit(tr, toks):
     groups, entries, falls = groups_of(tr)
     group_of = {k: r for r, m in groups.items() for k in m}
     rtype = CTYPE
+
+    def cross(k, line):
+        """GOTOs between the main program and the routines: into a PROC's
+        lines from the main program enters its group there (no PROC around
+        it); out of a PROC/FN into the main program is bas_goto_main"""
+        def sub(m):
+            o = tr.owner.get(int(m.group(1)))
+            if k == 0 and o:
+                return 'G_%d(%s); bas_error(13, "Not in a procedure");' % (group_of[o], m.group(1))
+            if k != 0 and o == 0:
+                return 'bas_goto_main(%s);' % m.group(1)
+            return m.group(0)
+        return GOTO_L.sub(sub, line)
+    tr.funcs = [(f[0], f[1], f[2], [cross(k, x) for x in f[3]]) + tuple(f[4:]) for k, f in enumerate(tr.funcs)]
 
     def proto(name, kind, params, rt):
         return 'static %s %s(%s)' % ('void' if kind == 'PROC' else rtype[rt], fname(kind, name),
@@ -1304,7 +1411,7 @@ def emit(tr, toks):
             out.append('')
             continue
         if kind == 'main':
-            out.append('void bas_main(void)')
+            out.append('static void main_(void)' if progname else 'void bas_main(void)')
         else:
             out.append(proto(name, kind, params, rt))
         out.append('{')
@@ -1321,6 +1428,11 @@ def emit(tr, toks):
             out.append('    save_%s(&%s);' % (vtype(v), cname(v)))
         if kind == 'main' and tr.top_handlers:
             out += ['    ' + x for x in handlers()]
+        if kind == 'main' and tr.main_entries:
+            out.append('    bas_main_undo = mark;')
+            out.append('    if (setjmp(bas_main_jb)) switch (bas_main_line) {')
+            out += ['    case %d: goto l_%d;' % (n, n) for n in sorted(tr.main_entries)]
+            out.append('    }')
         out += ['    ' + x for x in body]
         out.append('out:')
         if hh:
@@ -1356,6 +1468,13 @@ def emit(tr, toks):
         out.append('    ;')
         out.append('}')
         out.append('')
+    if progname:
+        out.append('static void clear_(void)')
+        out.append('{')
+        out += ['    ' + x for x in clear]
+        out.append('}')
+        out.append('')
+        out.append('const struct bas_program bas_prog_%s = {%s, main_, data_, clear_, %d};' % (progname[0], cstr(progname[1]), size))
     return '\n'.join(out) + '\n'
 
 
@@ -1375,10 +1494,18 @@ def split_data(s):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    name = riscos = None
+    while len(args) > 2 and args[0] in ('--name', '--riscos'):
+        if args[0] == '--name':
+            name = args[1]
+        else:
+            riscos = args[1]
+        args = args[2:]
+    if len(args) != 2:
         sys.exit(__doc__)
     try:
-        c = generate(open(sys.argv[1], 'rb').read())
+        c = generate(open(args[0], 'rb').read(), name and (name, riscos or name))
     except Fail as e:
         sys.exit('bas2c: %s' % e)
-    open(sys.argv[2], 'w').write(c)
+    open(args[1], 'w').write(c)

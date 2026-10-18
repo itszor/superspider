@@ -39,6 +39,7 @@ S get_s(uint32_t a);                       /* $a: up to CR */
 S get_s0(uint32_t a);                      /* a SWI's string: up to a control character */
 void put_s(uint32_t a, S v);               /* $a = v (CR-terminated) */
 S print_num(double v);                     /* a number as PRINT lays it out (@% = 10) */
+S mid_set(S a, int p, int n, S b);         /* MID$(a,p,n) = b: a with b over it from p */
 
 /* --- arrays: up to two dimensions (d2 < 0: one) */
 typedef struct { int32_t *p; int d1, d2; } ARR_i;
@@ -109,6 +110,8 @@ void line(int x1, int y1, int x2, int y2);
 void cls(void);
 void mode(int m);
 int bas_mode(void);
+int bas_vpos(void);                        /* VPOS, POS: the text cursor */
+int bas_pos(void);
 void origin(int x, int y);
 void off(void);
 void oscli(S c);
@@ -138,7 +141,23 @@ int32_t usr(uint32_t addr);
 void sys_call(uint32_t swi, uint32_t *out);    /* SYS: R[] set; out = R0-R9 after */
 uint32_t swi_number(const char *name);
 uint32_t roger_scratch_n(int k, const char *s);   /* a SYS string argument (one buffer per register) */
-void bas_asm(const char *text);            /* the assembler: the game's own (game.c) */
+void bas_asm(const char *text);            /* an assembler statement bas2c.py couldn't translate:
+                                              the game's own (game.c) */
+
+/* --- the assembler (tools/basasm.py's code): at P% (O% with OPT 4-7) */
+extern int bas_opt;                        /* OPT: bit 1 errors, bit 2 offset assembly */
+void asm_opt(int v);
+void asm_w(uint32_t w);                    /* EQUD, an instruction */
+void asm_h(int v);                         /* EQUW */
+void asm_b(int v);                         /* EQUB */
+void asm_s(S s);                           /* EQUS */
+void asm_align(void);
+uint32_t asm_imm(int32_t v);               /* #v as an operand 2: I, rotation, 8 bits */
+uint32_t asm_shift(int type, int32_t n);   /* a shift by #n */
+uint32_t asm_branch(int32_t to);           /* B/BL's offset from P% */
+uint32_t asm_off12(int32_t off);           /* LDR/STR's #offset: U and 12 bits */
+uint32_t asm_pcrel(int32_t to);            /* LDR/STR of a label: from P% + 8 */
+void asm_adr(int cond, int rd, int32_t to);    /* ADR: ADD or SUB from PC */
 
 /* --- files */
 int32_t bas_open(int how, S name);
@@ -158,5 +177,32 @@ S bas_input_s(int32_t h);
 void quit(void) __attribute__((noreturn));
 void bas_main(void);                       /* the program (basic.c) */
 
-extern int32_t A_I, B_I, C_I, D_I, E_I, F_I, G_I, H_I;
+/* --- several programs that CHAIN one another (bas2c.py --name N: basic_N.c
+ * defines bas_prog_N): bas_run runs one, at PAGE (bas_page) with its heap
+ * from its TOP; CHAIN looks the name up among them (its last components:
+ * "REALM2.X" is <Disc2>.X with Disc2 set to ADFS::0.$.REALM2) and starts
+ * it afresh, keeping only A%-Z% (and PAGE, as a PAGE= before it left it) */
+struct bas_program {
+    const char *name;                      /* RISC OS path, its last components (e.g. "$.!Realm.Loader") */
+    void (*main)(void);
+    const char *const *data;
+    void (*clear)(void);                   /* its variables unset */
+    uint32_t size;                         /* the tokenised program's length: TOP - PAGE */
+};
+void bas_run(const struct bas_program *const *programs, const struct bas_program *first)
+    __attribute__((noreturn));
+void bas_chain(S name) __attribute__((noreturn));
+extern const struct bas_program *bas_current;
+/* the game's hook: the program a CHAIN names (NULL: look it up as above) */
+extern const struct bas_program *(*bas_chain_hook)(const char *name);
+/* GOTO from a PROC/FN into the main program: the PROC is left (its LOCALs
+ * as they are), and the main program goes on at the line */
+extern jmp_buf bas_main_jb;
+extern int bas_main_line, bas_main_undo;
+void bas_goto_main(int line) __attribute__((noreturn));
+
+/* the resident integer variables, A%-Z%: kept across CHAIN; P% (and O%)
+ * the assembler's */
+extern int32_t A_I, B_I, C_I, D_I, E_I, F_I, G_I, H_I, I_I, J_I, K_I, L_I, M_I,
+    N_I, O_I, P_I, Q_I, R_I, S_I, T_I, U_I, V_I, W_I, X_I, Y_I, Z_I;
 #endif /* BASIC_RUNTIME_H */

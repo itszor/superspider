@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars and Chuck Rock. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock and Enter the Realm. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -30,7 +30,10 @@ into a game.
                                      game's own unpacker (Lemmings' tools/unpack_lemboot.py)
     gap_roots.py                     run-time gaps -> roots for the next analysis
     bas2c.py PROGRAM OUT.c           BBC BASIC V program -> C, on the BASIC runtime
-                                     (runtime/basic_runtime.{h,c}, below)
+                                     (runtime/basic_runtime.{h,c}, below); --name N for
+                                     one of several that CHAIN one another
+    basasm.py                        BASIC's ARM assembler ([ ... ]), for bas2c: C that
+                                     assembles at run time
     spark.py ARCHIVE OUT             Spark archives (ARC with RISC OS headers, also &DDC):
                                      stored, packed, crunched, squashed, compressed
     implode.py ZIP                   PKWARE "imploded" zip members (method 6, as SparkFS
@@ -158,7 +161,18 @@ List every piece of ARM code that runs:
   DIMmed block) and may change its settings (bas_dim_clear, bas_sys_idle,
   bas_cli) before calling bas_main(). bas2c handles GOTOs between PROCs,
   PROCs that run on into the next DEF, and ON ERRORs set in PROCs (Saloon
-  Cars' RACE); see its docstring.
+  Cars' RACE); GOTOs between a PROC and the main program and a DEF met
+  inside a loop (Enter the Realm); see its docstring.
+  - Several programs that CHAIN one another (Enter the Realm's eighteen):
+    translate each with `bas2c.py --name N --riscos NAME` (NAME the last
+    components of its RISC OS name, which CHAIN looks for) and start the
+    first with bas_run(table, first) instead of bas_main(); the runtime
+    gives each its heap from its own TOP at PAGE (PAGE= as the one before
+    left it) and keeps A%-Z% across CHAIN, as BASIC does.
+  - The assembler is translated (basasm.py): a program that assembles
+    routines into a DIMmed block and CALLs them runs them interpreted (code
+    made at run time: roger_config.interpret_gaps). A statement it can't
+    translate goes to the game's bas_asm(text), as before.
 
 With more than one or two images, write a `tools/images.py` that drives
 analyse/gen/roots over a table of (name, path, base, exec, module). See
@@ -203,6 +217,9 @@ fervour/) lists what it needed. The patterns so far:
 - unrolled loops entered part way through with add pc,pc,rX,lsl #k
   (k >= 3: blocks of 2^k bytes; Darkwood's Gouraud routines, Galactic
   Dan's byte copies)
+- should-be-zero fields the ARM ignores (mov r3,r3,#&77: &E3A33077, Enter
+  the Realm's engine): taken as code when ordinary code runs on into them,
+  still not as a guess
 - span fills entered backwards: add lr,pc,#k ; sub pc,lr,rX,<shift> into
   a run of identical blocks ending at lr (Darkwood's MCMain2)
 - computed jumps on a byte's bits (ldrb r0 ; add pc,pc,r0,lsr #4): a
@@ -323,7 +340,7 @@ built from. `weave.py index` writes recipes.json, every recipe's
 fingerprints in one file. Chocks Away was the first (~/games/chocks-away);
 every game has one now. Their inputs: TOSEC zips of disc images (Twin
 World, Gyrinus II, Stunt Racer 2000, Fervour, Lemmings), disc images
-(Warlocks, Galactic Dan; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
+(Warlocks, Galactic Dan, Enter the Realm's three; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
 plain files or directories (Pushy II, Elite, Saloon Cars - SparkFS-imploded: the filetypes from the zip's
 RISC OS extra fields). A disc's "game_dirs" entry "$" copies the whole
 disc into game/ (Warlocks' data disc, read from its root); directories of

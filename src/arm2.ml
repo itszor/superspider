@@ -162,6 +162,15 @@ let implausible_reason i =
 
 let plausible i = implausible_reason i = None
 
+(* Implausible only for a should-be-zero field the CPU ignores (rn of
+   mov/mvn, rd of a test op): code if ordinary code runs on into it. An
+   assembler wouldn't write it, but a programmer can (Enter the Realm's
+   mov r3,r3,#&77 - &E3A33077). *)
+let sbz_only i =
+  match implausible_reason i with
+  | Some ("mov/mvn with rn <> 0" | "test op with rd <> 0") -> true
+  | _ -> false
+
 let regs_of_mask m = List.filter (fun r -> m land (1 lsl r) <> 0) (List.init 16 Fun.id)
 
 (* Registers written (r15 included when the instruction can write the PC).
@@ -200,6 +209,13 @@ let writes_pc i = List.mem 15 (defs i)
 
 (* Data-processing writing r15 with S set also restores the PSR (movs pc,lr);
    ldm with ^ and r15 in the list does too. *)
+
+(* p, the word before, always runs on into the next one when it executes:
+   no branch, SWI or write to the PC, and plausible itself *)
+let runs_on p =
+  plausible p && not (writes_pc p) &&
+  (match p.kind with Branch _ | Swi _ -> false | _ -> true)
+
 let restores_psr i =
   match i.kind with
   | Dp { op; s; rd = 15; _ } -> s && not (is_test op)
