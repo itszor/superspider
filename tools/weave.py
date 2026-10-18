@@ -24,7 +24,9 @@ any dump of the same release is found, whatever its file name or format:
 Recipes are looked for in $WEAVE_RECIPES (directories separated by ':'),
 default ~/games/*. INPUT is a .zip (its members are examined) or a disc
 image or archive: .adf (ADFS D/E/F, via adf_extract.py), .hfe (an HxC
-floppy image, decoded to sectors by hfe.py, then as an .adf), an ArcFS
+floppy image, decoded to sectors by hfe.py, then as an .adf), .jfd
+(JASPP's ADFFS image, gzipped or not, decoded to sectors by jfd.py, then
+as an .adf), an ArcFS
 archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
 arcfs.py) or a Spark archive (&DDC too, ARC's &1A header with the RISC OS
 bit, via spark.py); a zip member too. A "disc" in a recipe is then the
@@ -50,9 +52,10 @@ recipe.json:
                           game_dirs], raw (true: the image itself is
                           copied to extracted/<its name>.img too, for a
                           game that reads sectors no file holds; an .hfe
-                          input is copied as it is, to extracted/<its
-                          name>.hfe, keeping what a flat image can't: sector
-                          sizes and CRC errors, e.g. a protection track)
+                          or .jfd input is copied as it is, to
+                          extracted/<its name>.hfe or .jfd, keeping what a
+                          flat image can't: sector sizes and CRC errors,
+                          e.g. a protection track)
   (the disc or alternative matched is extracted to extracted/<its name>,
   so a build step can tell which one it has)
   build[]                 shell commands run in the recipe directory, in
@@ -75,6 +78,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 from spark import is_spark   # noqa: E402
 import hfe                   # noqa: E402
+import jfd                   # noqa: E402
 from implode import read_member   # noqa: E402
 
 
@@ -175,7 +179,7 @@ def images_in(inputs, tmp):
             with zipfile.ZipFile(p) as z:
                 n0 = len(out)
                 for n in z.namelist():
-                    if n.lower().endswith(('.adf', '.hfe')) or (not n.endswith('/') and is_archive(member_head(z, n))):
+                    if n.lower().endswith(('.adf', '.hfe', '.jfd')) or (not n.endswith('/') and is_archive(member_head(z, n))):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))
@@ -225,12 +229,12 @@ class Disc:
         self.name, self.path, self.container = name, path, container
         if os.path.isdir(path):                     # a plain disc: its files
             self.sha, self.tree, self.clean, self._files = tree_sha(path), path, True, {}
-            self.flux = False
+            self.raw_ext = None
             return
-        self.flux = hfe.is_hfe(path)
+        self.raw_ext = '.hfe' if hfe.is_hfe(path) else '.jfd' if jfd.is_jfd(path) else '.img'
         img = path
-        if self.flux:                               # its sectors, as a flat image
-            data, _, _ = hfe.decode(path)
+        if self.raw_ext != '.img':                  # its sectors, as a flat image
+            data = (hfe.decode if self.raw_ext == '.hfe' else jfd.decode)(path)[0]
             self.sha = hashlib.sha256(data).hexdigest()
             img = os.path.join(tmp, 'h' + self.sha[:16] + '.adf')
             with open(img, 'wb') as f:
@@ -328,7 +332,7 @@ def extract(rdir, inputs):
         for disc in r['discs']:
             for form in forms(disc):
                 shutil.rmtree(os.path.join(rdir, 'extracted', form['name']), ignore_errors=True)
-                for ext in ('.img', '.hfe'):
+                for ext in ('.img', '.hfe', '.jfd'):
                     if os.path.isfile(os.path.join(rdir, 'extracted', form['name'] + ext)):
                         os.remove(os.path.join(rdir, 'extracted', form['name'] + ext))
             full = False
@@ -342,7 +346,7 @@ def extract(rdir, inputs):
             print('%s: %s%s' % (disc['name'], d.name, '' if form is disc else ' (as %s)' % form['name']))
             shutil.copytree(d.tree, os.path.join(rdir, 'extracted', form['name']))
             if form.get('raw') and not os.path.isdir(d.path):
-                shutil.copy(d.path, os.path.join(rdir, 'extracted', form['name'] + ('.hfe' if d.flux else '.img')))
+                shutil.copy(d.path, os.path.join(rdir, 'extracted', form['name'] + d.raw_ext))
             got[disc['name']] = form
         game = os.path.join(rdir, 'game')
         shutil.rmtree(game, ignore_errors=True)

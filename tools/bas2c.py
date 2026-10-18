@@ -88,7 +88,9 @@ def lex(data):
             # a * command starts a statement: after DEF PROCname too
             elif c == ord('*') and (toks[-1].kind == 'nl' or toks[-1].val in (':', 'THEN', 'ELSE') or
                                     (len(toks) > 2 and toks[-2].val == 'PROC' and toks[-3].val == 'DEF')):
-                toks.append(Tok('star', b[i + 1:].decode('latin-1').rstrip(), num))
+                # (only spaces: CHR$160, which latin-1 makes a no-break space, is a
+                # character of the command - Enter the Realm's *<CHR$160>)
+                toks.append(Tok('star', b[i + 1:].decode('latin-1').rstrip(' \t\r'), num))
                 break
             elif c == 0x22:
                 j, s = i + 1, ''
