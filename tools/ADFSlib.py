@@ -881,16 +881,22 @@ class ADFSdisc(Utilities):
         adf.seek(0, 0)
 
         # A dump that stops after the last sector in use (Starch's: 620K of
-        # an 800K D format disc) is the size its old map gives, padded.
+        # an 800K D format disc) is the size its old map gives, padded; one
+        # that stops short of a new map disc's last track (Ego: Repton 4's,
+        # 795K of an E format disc) the size its disc record gives (zone
+        # 0's, at 4: disc_size at &10 in it).
         standard = (163840, 327680, 655360, 819200, 1638400)
         if length not in standard and length >= 0x200:
             head = adf.read(0x200)
             adf.seek(0, 0)
-            size = int.from_bytes(head[0xfc:0xff], 'little') * 256
-            if length < size and size in standard:
-                logging.warning("short image (%d bytes): padded to the old map's %d" % (length, size))
-                adf = io.BytesIO(adf.read() + bytes(size - length))
-                length = size
+            old = int.from_bytes(head[0xfc:0xff], 'little') * 256
+            new = int.from_bytes(head[0x14:0x18], 'little')
+            for size, kind in ((old, "old map's"), (new, "disc record's")):
+                if length < size and size in standard:
+                    logging.warning("short image (%d bytes): padded to the %s %d" % (length, kind, size))
+                    adf = io.BytesIO(adf.read() + bytes(size - length))
+                    length = size
+                    break
 
         if length == 163840:
             self.ntracks = 40

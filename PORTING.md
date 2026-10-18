@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock and Enter the Realm. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm and Ego: Repton 4. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -112,7 +112,11 @@ loads it to. Run `superspider` with no arguments for the full option list.
     handler directly to read a track of odd sector sizes and CRC errors.
     libroger reads it from the .hfe (roger_config.floppy; the recipe's
     `"raw": true` keeps it as extracted/<disc>.hfe), so the game's own
-    check runs and passes.
+    check runs and passes. Ego: Repton 4 verifies its disc's last track,
+    which has to fail (unformatted on the original). Dumps stop before
+    that track, and libroger has the tracks a flat image is short of
+    unformatted, so with the image as the floppy that check passes too.
+    ADFSlib pads such a short image (old map or new) to read its files.
 
   The image you translate is the one that actually runs, at the address it
   runs from.
@@ -340,7 +344,7 @@ built from. `weave.py index` writes recipes.json, every recipe's
 fingerprints in one file. Chocks Away was the first (~/games/chocks-away);
 every game has one now. Their inputs: TOSEC zips of disc images (Twin
 World, Gyrinus II, Stunt Racer 2000, Fervour, Lemmings), disc images
-(Warlocks, Galactic Dan, Enter the Realm's three; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
+(Warlocks, Galactic Dan, Ego: Repton 4, Enter the Realm's three; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
 plain files or directories (Pushy II, Elite, Saloon Cars - SparkFS-imploded: the filetypes from the zip's
 RISC OS extra fields). A disc's "game_dirs" entry "$" copies the whole
 disc into game/ (Warlocks' data disc, read from its root); directories of
