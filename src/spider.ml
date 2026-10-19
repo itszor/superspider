@@ -52,7 +52,9 @@ let add_data t a n why =
 let os_writes n = n land lnot 0x20000 = 0x01
 (* OS_Exit (either form: XOS_Exit never returns either) and OS_GenerateError
    (XOS_GenerateError returns with V set) *)
-let noreturn_swi n = n land lnot 0x20000 = 0x11 || n = 0x2B
+(* OS_Exit; OS_GenerateError and MessageTrans_ErrorLookup (without X: the
+   error is raised) *)
+let noreturn_swi n = n land lnot 0x20000 = 0x11 || n = 0x2B || n = 0x41506
 
 (* Trace one path from a, owned by function fn. *)
 let trace t a fn =
@@ -63,7 +65,7 @@ let trace t a fn =
     else if Hashtbl.mem t.data a then problem t a fn "flowed into data"
     else
       let i = Image.decode img a in
-      if i.cond <> Arm2.NV && not (Arm2.plausible i)
+      if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.psr_transfer i)
          && not (Arm2.sbz_only i && Hashtbl.mem t.code (a - 4) && Arm2.runs_on (Image.decode img (a - 4))) then
         problem t a fn ("invalid: " ^ Arm2.to_string i)
       else begin

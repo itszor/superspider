@@ -322,6 +322,21 @@ def identify(inputs, tmp, quiet=False):
     return ranked
 
 
+def merge_tree(src, dst):
+    """copy src over dst: a file replaces one of the same RISC OS name there,
+    whatever their ,load-exec suffixes (a later disc's copy of a file wins)"""
+    os.makedirs(dst, exist_ok=True)
+    for f in os.listdir(src):
+        s, base = os.path.join(src, f), f.split(',')[0].lower()
+        if os.path.isdir(s):
+            merge_tree(s, os.path.join(dst, f))
+            continue
+        for old in os.listdir(dst):
+            if old.split(',')[0].lower() == base and os.path.isfile(os.path.join(dst, old)):
+                os.remove(os.path.join(dst, old))
+        shutil.copy2(s, os.path.join(dst, f))
+
+
 def extract(rdir, inputs):
     r = json.load(open(os.path.join(rdir, 'recipe.json')))
     tmp = tempfile.mkdtemp()
@@ -359,9 +374,8 @@ def extract(rdir, inputs):
                     shutil.copytree(tree, game, dirs_exist_ok=True)
                     continue
                 src = find_path(tree, gd)
-                if src:
-                    shutil.copytree(src, os.path.join(game, os.path.basename(src)),
-                                    dirs_exist_ok=True)     # discs may share an application
+                if src:                     # discs may share an application
+                    merge_tree(src, os.path.join(game, os.path.basename(src)))
     finally:
         shutil.rmtree(tmp)
 

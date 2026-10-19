@@ -114,6 +114,8 @@ let decode_line (i : Arm2.t) =
     | Branch { link; target } -> (if link then "bl" else "b"), Printf.sprintf "target=%d" target
     | Swi n -> "swi", Printf.sprintf "n=%d" n
     | Cop { cp; _ } -> "cop", Printf.sprintf "cp=%d" cp
+    | Mrs { rd; spsr } -> "mrs", Printf.sprintf "rd=%d spsr=%b" rd spsr
+    | Msr { spsr; mask; _ } -> "msr", Printf.sprintf "spsr=%b mask=%d" spsr mask
     | Undefined _ -> "undef", "" in
   Printf.sprintf "%d %d %s cond=%s pc=%b plausible=%b defs=%s uses=%s %s"
     i.addr i.word kind (match i.cond with AL -> "al" | c -> string_of_cond c)

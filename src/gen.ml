@@ -516,7 +516,11 @@ let dataproc c fn a w =
   let b, cy, regshift = op2 c a w in
   let av = regv c rn a (if regshift then 12 else 8) false in
   let name = dpops.(op) in
-  if op >= 8 && op <= 11 then begin
+  if op >= 8 && op <= 11 && s = 0 then
+    (* MRS/MSR (ARMv3): on an ARM2 or ARM3 a test op without S, which writes
+       nothing - see Arm2 *)
+    [ Printf.sprintf "/* %s: nothing on an ARM2 */" (Arm2.to_string (Arm2.decode a w)) ]
+  else if op >= 8 && op <= 11 then begin
     if rd = 15 then
       (* TEQP & co: the PSR from the result. R15 as Rn reads as the bare
          address, so TEQP PC,#0 means "USR mode, flags clear". *)

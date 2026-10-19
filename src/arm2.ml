@@ -10,8 +10,15 @@
      rd = r15 (e.g. movs pc,lr) restores the PSR as it jumps; one of the
      test ops with rd = r15 (teqp etc.) writes the PSR without jumping;
      ldm with ^ and r15 in the list restores the PSR.
-   - No halfword/signed transfers, no MRS/MSR, no BX: those encodings are
-     undefined here. SWP exists from ARM3 on and is decoded.
+   - No halfword/signed transfers and no BX: those encodings are undefined
+     here. SWP exists from ARM3 on and is decoded.
+   - MRS and MSR (ARMv3) are decoded, for programs that run on both 26-bit
+     and 32-bit RISC OS: they test which they are on (teq pc,pc; or mov
+     lr,#0 ; mrs lr,cpsr ; tst lr,#&1c) and take a path with or without
+     them. On an ARM2 or ARM3 the encodings are test ops without S, which
+     write neither a register nor the flags: they do nothing, and the
+     programs rely on that. They are implausible as guessed code (an ARM2
+     program has none), but flow that reaches one goes on.
    - Coprocessor instructions decode (FPA uses cp1/cp2); whether a given
      coprocessor is plausible is a separate question (Arm2.plausible). *)
 
@@ -52,6 +59,8 @@ type kind =
   | Branch of { link : bool; target : int }
   | Swi of int
   | Cop of { ck : cop_kind; cp : int }
+  | Mrs of { rd : int; spsr : bool }
+  | Msr of { spsr : bool; mask : int; src : operand2 }   (* mask: the field bits c x s f (16-19) *)
   | Undefined of string
 
 type t = { addr : int; word : int; cond : cond; kind : kind }
@@ -97,7 +106,14 @@ let decode_kind addr w =
     Undefined "halfword/long-multiply space (ARMv4+)"
   | (0 | 1) as t ->
     let op = dp_op_of_int (field w 21 4) and s = bit w 20 in
-    if is_test op && not s then Undefined "MRS/MSR/BX space (test op without S)"
+    if is_test op && not s then
+      if t = 0 && w land 0x0FBF0FFF = 0x010F0000 then Mrs { rd = field w 12 4; spsr = bit w 22 }
+      else if t = 0 && w land 0x0FB0FFF0 = 0x0120F000 then
+        Msr { spsr = bit w 22; mask = field w 16 4; src = Reg (Shift_imm (field w 0 4, LSL, 0)) }
+      else if t = 1 && w land 0x0FB0F000 = 0x0320F000 then
+        let rot = field w 8 4 in
+        Msr { spsr = bit w 22; mask = field w 16 4; src = Imm (ror32 (field w 0 8) (rot * 2), rot) }
+      else Undefined "MRS/MSR/BX space (test op without S)"
     else
       let op2 =
         if t = 1 then
@@ -150,6 +166,7 @@ let is_undefined i = match i.kind with Undefined _ -> true | _ -> false
 let implausible_reason i =
   match i.kind with
   | Undefined why -> Some why
+  | Mrs _ | Msr _ -> Some "MRS/MSR (ARMv3)"
   | Cop { cp = 15; ck = (Mrc | Mcr); _ } -> None
   | Cop { cp; _ } when cp <> 1 && cp <> 2 -> Some (Printf.sprintf "coprocessor %d" cp)
   | Dp { op = (MOV | MVN); rn; _ } when rn <> 0 -> Some "mov/mvn with rn <> 0"
@@ -161,6 +178,9 @@ let implausible_reason i =
   | _ -> None
 
 let plausible i = implausible_reason i = None
+
+(* MRS or MSR: code when flow reaches it, though not when guessing *)
+let psr_transfer i = match i.kind with Mrs _ | Msr _ -> true | _ -> false
 
 (* Implausible only for a should-be-zero field the CPU ignores (rn of
    mov/mvn, rd of a test op): code if ordinary code runs on into it. An
@@ -186,7 +206,8 @@ let defs i =
   | Block { load; wb; rn; regs; _ } ->
     (if load then regs_of_mask regs else []) @ (if wb then [ rn ] else [])
   | Branch { link; _ } -> if link then [ 14; 15 ] else [ 15 ]
-  | Swi _ | Cop _ | Undefined _ -> []
+  | Mrs { rd; _ } -> [ rd ]           (* unchanged on an ARM2, but not on an ARM6 *)
+  | Swi _ | Cop _ | Msr _ | Undefined _ -> []
 
 let shifted_uses = function
   | Shift_imm (rm, _, _) -> [ rm ]
@@ -203,7 +224,8 @@ let uses i =
     (if load then [] else [ rd ]) @ [ rn ]
     @ (match off with Off_imm _ -> [] | Off_reg (rm, _, _) -> [ rm ])
   | Block { load; rn; regs; _ } -> rn :: (if load then [] else regs_of_mask regs)
-  | Branch _ | Swi _ | Cop _ | Undefined _ -> []
+  | Msr { src = Reg s; _ } -> shifted_uses s
+  | Branch _ | Swi _ | Cop _ | Mrs _ | Msr _ | Undefined _ -> []
 
 let writes_pc i = List.mem 15 (defs i)
 
@@ -284,4 +306,10 @@ let to_string i =
   | Cop { ck; cp } ->
     Printf.sprintf "%s%s p%d (&%08x)"
       (match ck with Cdp -> "cdp" | Mrc -> "mrc" | Mcr -> "mcr" | Ldc -> "ldc" | Stc -> "stc") c cp i.word
+  | Mrs { rd; spsr } -> Printf.sprintf "mrs%s %s, %s" c (reg rd) (if spsr then "spsr" else "cpsr")
+  | Msr { spsr; mask; src } ->
+    let f = String.concat "" (List.filter_map (fun (b, n) -> if mask land b <> 0 then Some n else None)
+                                [ 1, "c"; 2, "x"; 4, "s"; 8, "f" ]) in
+    Printf.sprintf "msr%s %s_%s, %s" c (if spsr then "spsr" else "cpsr") f
+      (match src with Imm (v, _) -> Printf.sprintf "#&%x" v | Reg sh -> string_of_shifted sh)
   | Undefined why -> Printf.sprintf "undefined (%s)" why

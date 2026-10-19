@@ -577,9 +577,18 @@ let add_set tbl k s =
 let note_libinit t st =
   match st.regs.(0) with
   | Consts s when IS.cardinal s = 1 ->
+    (* A module linked with the library's stubs relocates itself before it
+       calls LibInitModule: its chunk list, in the file, has the addresses
+       it was linked at (&8000 on). Its vectors hold the stubs' placeholder,
+       mov pc,#0, until the library fills them. *)
+    let placeholder a = Image.inside t.img a && Image.word t.img a = 0xE3A0F000 in
+    let rel vs = if not (Image.inside t.img vs) && placeholder (vs - 0x8000 + t.img.Image.base)
+      then t.img.Image.base - 0x8000 else 0 in
     let rec chunk d =
       if Image.inside t.img (d + 16) && Image.word t.img d <> 0xFFFFFFFF then begin
         let id = Image.word t.img d and vs = Image.word t.img (d + 4) and ve = Image.word t.img (d + 8) in
+        let r = rel vs in
+        let vs = vs + r and ve = ve + r in
         if id >= 1 && id <= 2 && vs < ve && ve - vs < 0x1000 && Image.inside t.img vs then begin
           let rec mark w k = if w < ve then begin
               Hashtbl.replace t.libvec w (id, k);
@@ -938,6 +947,7 @@ let sets_flags (i : Arm2.t) =
   | Arm2.Dp { s; _ } | Arm2.Mul { s; _ } -> s
   | Arm2.Swi _ -> true
   | Arm2.Cop { ck = Arm2.Mrc; _ } -> true
+  | Arm2.Msr _ -> true
   | Arm2.Block { load = true; psr = true; _ } -> true
   | _ -> false
 
@@ -1604,7 +1614,7 @@ and analyse_function t f =
                               (List.filter (fun (k, _) -> match st.regs.(13) with
                                    | Consts s -> IS.exists (fun c -> abs (k - c) < 64) s | _ -> false)
                                   (IM.bindings st.amem))));
-    if i.cond <> Arm2.NV && not (Arm2.plausible i)
+    if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.psr_transfer i)
        && not (Arm2.sbz_only i && Hashtbl.mem t.code (a - 4) && Arm2.runs_on (Image.decode img (a - 4))) then
       Hashtbl.replace t.problems a ("invalid: " ^ Arm2.to_string i)
     else begin
@@ -1700,7 +1710,7 @@ and analyse_function t f =
               mark (x + 4) end in
           mark next;
           goto a after st
-        | Arm2.Swi n when features.clib && (n land lnot 0x20000 = 0x80680 || n land lnot 0x20000 = 0x80681) ->
+        | Arm2.Swi n when features.clib && (let n = n land lnot 0x20000 in n >= 0x80680 && n <= 0x80684) ->
           note_libinit t st;
           goto a next (clobber st [ 0; 1; 2; 3; 4; 5; 6 ])
         | Arm2.Swi n when Spider.noreturn_swi n -> ()
@@ -1722,7 +1732,12 @@ and analyse_function t f =
              for r = 0 to 7 do
                note_candidates t st.regs.(r) a (Printf.sprintf "swi &%x r%d" n r)
              done);
-          goto a next (clobber st [ 0; 1; 2; 3 ])
+          (* r0-r3 may hold results; not one holding this function's return
+             address, though: the code relies on that surviving (a SWI
+             veneer: mov r3,lr ; swi ... ; mov pc,r3) *)
+          let results = List.filter (fun r -> match st.regs.(r) with Sym (Reg0 14, 0) -> false | _ -> true)
+              [ 0; 1; 2; 3 ] in
+          goto a next (clobber st results)
         | Arm2.Dp { op; rd; rn; op2; s = setf; _ } ->
           if Arm2.is_test op then goto a next st
           else
@@ -1885,6 +1900,8 @@ and analyse_function t f =
             goto a next (if wb then set_reg !st1 rn final else !st1)
           end
         | Arm2.Cop _ -> goto a next st
+        | Arm2.Mrs { rd; _ } -> goto a next (set_reg st rd Top)
+        | Arm2.Msr _ -> goto a next { st with fk = -1; cmp = None }
         | Arm2.Undefined _ -> ()
         end
     end
