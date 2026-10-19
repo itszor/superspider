@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm and Ego: Repton 4. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4 and Simon the Sorcerer. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -229,6 +229,15 @@ fervour/) lists what it needed. The patterns so far:
 - computed jumps on a byte's bits (ldrb r0 ; add pc,pc,r0,lsr #4): a
   byte load is 0-255, and a jump's targets are word-aligned, as an ARM2
   takes them (Saloon Cars)
+- the C library linked into the image (Acorn's ANSILib, no stubs; `clib`):
+  _kernel_init's block at the start-up's branch, the stack checks
+  (cmp sp,sl ; bllt __rt_stkovf_split) as calls that return, and
+  _kernel_swi's SWI built on the stack (mov pc,sp) returning to the
+  caller (Simon the Sorcerer)
+- a table entry ORed with a word that only holds PSR bits, a null first
+  slot (an interpreter's opcode 0), -1 as an unset pointer (SIG_ERR)
+- an unconditional undefined instruction that ordinary code runs into: a
+  trap through the program's own vector at &4 (Desktop Tracker)
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to
@@ -252,6 +261,9 @@ adapt them:
 - Gyrinus II for modules and BASIC loaders.
 - Pushy II for a Wimp task, or a Risc PC mode (`vidc20`).
 - Fervour for packed images, its own sound DMA, or a Wimp front end.
+- Simon the Sorcerer for a C program with the C library linked in
+  (ANSILib), many discs merged into one tree, or a music module that
+  drives the sound hardware itself (Desktop Tracker).
 
 Fill in from what !Run did:
 

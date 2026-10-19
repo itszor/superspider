@@ -675,6 +675,10 @@ let sub_v a b =
 (* Masks that only touch the 26-bit PSR bits leave a code address intact. *)
 let psr_only m = m land addr_mask = 0
 
+(* A pointer's value before it is set: 0, or -1 (the C library's SIG_ERR in
+   its signal handler table, compared against before the call) *)
+let unset_pointer c = psr_only c || c = m32
+
 let eval_dp st (i : Arm2.t) op rn op2 =
   let open Arm2 in
   let b = op2_val st i op2 in
@@ -708,7 +712,7 @@ let eval_dp st (i : Arm2.t) op rn op2 =
         mk_range 0 hi (if m = 0 then 1 else 1 lsl trailing_zeros m)
       | va, vb -> map2_consts ( land ) va vb)
   | ORR -> (match a (), b with
-      | ((Sym _ | Tab _) as v), Consts s when IS.cardinal s = 1 && psr_only (IS.choose s) -> v
+      | ((Sym _ | Tab _) as v), Consts s when IS.for_all psr_only s -> v
       | va, vb -> map2_consts ( lor ) va vb)
   | EOR -> map2_consts ( lxor ) (a ()) b
   | BIC -> (match a (), b with
@@ -1262,12 +1266,12 @@ and analyse_function t f =
      | Consts s, _ when IS.equal s (IS.singleton (a + 4)) -> Hashtbl.replace t.linked a ()
      | _ -> ());
     match v with
-     | Consts s when IS.for_all (fun c -> c land addr_mask = 0) s ->
-       (* only 0: a pointer not set yet (a variable's initial value), not
-          a target *)
+     | Consts s when IS.for_all unset_pointer s ->
+       (* only 0 (or -1): a pointer not set yet (a variable's initial
+          value), not a target *)
        unknown_jump a st
      | Consts s ->
-       let s = IS.filter (fun c -> c land addr_mask <> 0) s in
+       let s = IS.filter (fun c -> not (unset_pointer c)) s in
        let s = IS.map (fun c -> map_addr t (c land addr_mask)) s in
        add_set t.const_jumps a s;
        if IS.cardinal s > 1 then Hashtbl.replace t.tables a ("bounded", IS.cardinal s);
@@ -1279,6 +1283,14 @@ and analyse_function t f =
           [r11,#k] ; add lr,pc,#0 ; mov pc,r1): a call, not a return, even
           though the pointer is relative to the function's entry *)
        unknown_jump a st
+     | Sym (Reg0 13, _) when features.clib ->
+       (* a jump to the stack: code built there (the C library's
+          _kernel_swi pushes a SWI instruction, then the rest of its own
+          code, and runs it), which returns to the caller as an APCS
+          function does: r4-r11 and sp as they were, r0-r3 and ip changed *)
+       let st' = clobber st [ 0; 1; 2; 3; 12; 14 ] in
+       let st' = List.fold_left (fun st r -> set_reg st r (Sym (Reg0 r, 0))) st' [ 4; 5; 6; 7; 8; 9; 10; 11; 13 ] in
+       summary := add_exit !summary { pc = Sym (Reg0 14, 0); st = { st' with stack = IM.empty }; at = a }
      | Sym _ ->
        if Hashtbl.mem t.lang_inits f then          (* the main program, which Init returns *)
          (match st.regs.(0) with
@@ -1363,6 +1375,9 @@ and analyse_function t f =
              Hashtbl.replace t.data e "jump table";
              scan base (k + 1) (List.fold_left (fun acc x -> IS.add x acc) acc valid)
            end else if limit <= max_consts || Hashtbl.mem t.var_known e then scan base (k + 1) acc
+           else if k = 0 && entry_vals = [ 0 ] then scan base 1 acc
+             (* a null first slot: an interpreter's opcode 0, handled before
+                the jump (a script's end) *)
            else acc in
        let targets = List.fold_left (fun acc b -> scan b 0 acc) IS.empty (tb.tbase :: tb.more) in
        if Sys.getenv_opt "SS_DEBUG_ADDR" = Some (Printf.sprintf "%x" a) then
@@ -1597,6 +1612,47 @@ and analyse_function t f =
     end;
     apply_summary a st target
     end in
+  (* _kernel_init's block {image base, language descriptions, their end}:
+     the kernel calls each description's Init routine (+16), which returns
+     the main program. Linked into the image (static), the kernel also
+     calls the description's other procedures (+20 on: finaliser, trap and
+     event handlers), which are then the image's too. *)
+  let kernel_init_langs blk ~static =
+    let le = Image.word img (blk + 8) in
+    let entry x = if x <> 0 && x land 3 = 0 && Image.inside img x then begin
+        Hashtbl.replace t.roots x ();
+        add_func t x
+      end in
+    let rec langs d =
+      if d < le && Image.inside img (d + 20) then begin
+        let size = Image.word img d in
+        let init = Image.word img (d + 16) in
+        for w = 0 to (max size 20) / 4 - 1 do Hashtbl.replace t.data (d + 4 * w) "language description" done;
+        if size > 16 && init <> 0 && Image.inside img init then begin
+          Hashtbl.replace t.lang_inits init ();
+          entry init
+        end;
+        if static then for w = 5 to size / 4 - 1 do entry (Image.word img (d + 4 * w)) done;
+        if size >= 4 then langs (d + size)
+      end in
+    langs (Image.word img (blk + 4)) in
+  (* r0 at a branch, if it points to a kernel init block in the image: the
+     image base, then language descriptions (each a size of 20-64 bytes and
+     an Init routine in the image) exactly filling [start, end) *)
+  let static_kernel_init = function
+    | Consts s when IS.cardinal s = 1 ->
+      let blk = IS.choose s in
+      if not (Image.inside img blk && Image.inside img (blk + 8)) then None else
+        let base = Image.word img blk and ls = Image.word img (blk + 4) and le = Image.word img (blk + 8) in
+        let rec ok d =
+          d = le || (Image.inside img (d + 16) &&
+                     let size = Image.word img d and init = Image.word img (d + 16) in
+                     size land 3 = 0 && size >= 20 && size <= 64 && d + size <= le
+                     && init land 3 = 0 && Image.inside img init && ok (d + size)) in
+        if (Image.inside img base || base = img.Image.base) && ls < le && le - ls <= 256
+           && Image.inside img ls && Image.inside img (le - 4) && ok ls
+        then Some blk else None
+    | _ -> None in
   let debug = match Sys.getenv_opt "SS_DEBUG" with
     | Some x -> int_of_string ("0x" ^ x) = f | None -> false in
   let debug_addr = Option.map (fun x -> int_of_string ("0x" ^ x)) (Sys.getenv_opt "SS_DEBUG_ADDR") in
@@ -1615,7 +1671,8 @@ and analyse_function t f =
                                    | Consts s -> IS.exists (fun c -> abs (k - c) < 64) s | _ -> false)
                                   (IM.bindings st.amem))));
     if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.psr_transfer i)
-       && not (Arm2.sbz_only i && Hashtbl.mem t.code (a - 4) && Arm2.runs_on (Image.decode img (a - 4))) then
+       && not ((Arm2.sbz_only i || Arm2.undefined_trap i) && Hashtbl.mem t.code (a - 4)
+               && Arm2.runs_on (Image.decode img (a - 4))) then
       Hashtbl.replace t.problems a ("invalid: " ^ Arm2.to_string i)
     else begin
       Hashtbl.replace t.code a ();
@@ -1671,23 +1728,31 @@ and analyse_function t f =
           else if (id, k) = (1, 0) then begin           (* _kernel_init: the program starts *)
             match st.regs.(0) with
             | Consts s when IS.cardinal s = 1 && Image.inside img (IS.choose s + 8) ->
-              let blk = IS.choose s in
-              let le = Image.word img (blk + 8) in
-              let rec langs d =
-                if d < le && Image.inside img (d + 20) then begin
-                  let size = Image.word img d in
-                  let init = Image.word img (d + 16) in
-                  for w = 0 to (max size 20) / 4 - 1 do Hashtbl.replace t.data (d + 4 * w) "language description" done;
-                  if size > 16 && init <> 0 && Image.inside img init then begin
-                    Hashtbl.replace t.lang_inits init ();
-                    Hashtbl.replace t.roots init ();
-                    add_func t init
-                  end;
-                  if size >= 4 then langs (d + size)
-                end in
-              langs (Image.word img (blk + 4))
+              kernel_init_langs (IS.choose s) ~static:false
             | _ -> Hashtbl.replace t.unresolved a "_kernel_init: init block unknown"
           end else jump a st' st.regs.(14)              (* a tail call: the library returns to lr *)
+        | Arm2.Branch { link = false; target }
+          when features.clib && Arm2.always i && static_kernel_init st.regs.(0) <> None ->
+          (* the C library linked into the image (Acorn's ANSILib: kernel
+             and library, no stubs): the start-up branches to _kernel_init,
+             in the image, with r0 its init block, as the stubs branch to
+             the shared library's *)
+          kernel_init_langs (Option.get (static_kernel_init st.regs.(0))) ~static:true;
+          goto a target st
+        | Arm2.Branch { link = true; target }
+          when features.clib && i.cond = Arm2.LT && Image.inside img target
+               && (match (Image.decode img (a - 4)).kind with
+                   | Arm2.Dp { op = Arm2.CMP; rn = 12 | 13; op2 = Arm2.Reg (Arm2.Shift_imm (10, Arm2.LSL, 0)); _ } -> true
+                   | _ -> false) ->
+          (* a C function's stack check (cmp sp,sl or cmp ip,sl ; bllt
+             __rt_stkovf_split_small/big) into the library linked in the
+             image: it returns as the shared library's vector entry does,
+             with the stack extended (APCS: r0-r3, ip, lr and the flags
+             changed), however it gets there *)
+          add_func t target;
+          Hashtbl.replace t.roots target ();
+          Hashtbl.replace t.assumed a ();
+          goto a next { (clobber st [ 0; 1; 2; 3; 12; 14 ]) with fk = -1; cmp = None }
         | Arm2.Branch { link = false; target } ->
           if features.copies && target <= a && a - target <= 64 && not (Arm2.always i) then
             (match Hashtbl.find_opt first target with
@@ -2060,11 +2125,12 @@ let spider_with_address_taken img entries =
   let decided : (int, verdict) Hashtbl.t = Hashtbl.create 64 in
   let rec loop entries =
     let t = spider img entries in
-    (* a program linked with the C library: every Norcroft APCS function
+    (* a program linked with the C library (its stubs, or the library
+       itself: language Init routines found): every Norcroft APCS function
        entry (mov ip,sp ; stmdb sp!,{...fp,ip,lr,pc} ; sub fp,ip,#4) is a
        candidate - C reaches functions through pointers passed as
        arguments, stored in structures, ... *)
-    if features.clib && Hashtbl.length t.libvec > 0 then begin
+    if features.clib && (Hashtbl.length t.libvec > 0 || Hashtbl.length t.lang_inits > 0) then begin
       let rec scan a =
         if Image.inside img (a + 8) then begin
           if Image.word img a = 0xE1A0C00D && Image.word img (a + 4) land 0xFFFFD800 = 0xE92DD800

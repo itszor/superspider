@@ -191,6 +191,13 @@ let sbz_only i =
   | Some ("mov/mvn with rn <> 0" | "test op with rd <> 0") -> true
   | _ -> false
 
+(* An unconditional instruction from the architecturally undefined space
+   (cond, 011, bit 4 set: &E7FFFFFF and the like): a deliberate trap into
+   the undefined instruction vector, code if ordinary code runs on into it
+   (Desktop Tracker puts a branch at &4 and traps, to get from IRQ to SVC
+   mode; the handler carries on after it) *)
+let undefined_trap i = i.cond = AL && (match i.kind with Undefined "undefined instruction space" -> true | _ -> false)
+
 let regs_of_mask m = List.filter (fun r -> m land (1 lsl r) <> 0) (List.init 16 Fun.id)
 
 (* Registers written (r15 included when the instruction can write the PC).

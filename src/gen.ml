@@ -573,14 +573,18 @@ let ldmstm c fn a w =
     if u = 1 then Printf.sprintf "%s + %d" base (if p = 1 then 4 else 0), Printf.sprintf "%s + %d" base (4 * n)
     else Printf.sprintf "%s - %d" base (4 * n - (if p = 1 then 0 else 4)), Printf.sprintf "%s - %d" base (4 * n) in
   let wbs = if wbit = 1 && rn <> 15 then Printf.sprintf "R[%d] = %s; " rn wbv else "" in
+  (* ^ without a PC load transfers the user bank (in a privileged mode) *)
+  let user = s = 1 && not (l = 1 && List.mem 15 regs) in
   if l = 1 then
     let parts = Printf.sprintf "LDM_BEGIN(%s) %s" start wbs
-                :: List.map (fun k -> if k = 15 then Printf.sprintf "LDM_PC(%d)" s else Printf.sprintf "LDM_R(%d)" k) regs in
+                :: List.map (fun k -> if k = 15 then Printf.sprintf "LDM_PC(%d)" s
+                              else Printf.sprintf (if user then "LDM_RU(%d)" else "LDM_R(%d)") k) regs in
     [ String.concat " " parts ^ " XFER_END;" ] @ (if List.mem 15 regs then [ after_pc_write c fn a ] else [])
   else
     let parts = Printf.sprintf "STM_BEGIN(%s)" start
                 :: List.map (fun k -> Printf.sprintf "STM_V(%s)"
-                                (if k = 15 then Printf.sprintf "(%s | PSR())" (pc c (a + 12)) else Printf.sprintf "R[%d]" k)) regs in
+                                (if k = 15 then Printf.sprintf "(%s | PSR())" (pc c (a + 12))
+                                 else if user then Printf.sprintf "user_reg(%d)" k else Printf.sprintf "R[%d]" k)) regs in
     [ String.concat " " parts ^ Printf.sprintf " %sXFER_END;" wbs ]
 
 let body c fn a w =
