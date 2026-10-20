@@ -404,6 +404,10 @@ type t = {
   tables : (int, string * int) Hashtbl.t;           (* jump site -> how bounded, number of targets *)
   var_known : (int, v) Hashtbl.t;                   (* variable -> values from the previous round (phase 5) *)
   var_stores : (int, v) Hashtbl.t;                  (* variable -> join of values stored this round *)
+  ret_known : (int, unit) Hashtbl.t;                (* code words a return is stored into: the previous rounds' *)
+  ret_stores : (int, unit) Hashtbl.t;               (* ...and this round's *)
+  fall_known : (int, unit) Hashtbl.t;               (* code words an instruction that falls through is stored into: *)
+  fall_stores : (int, unit) Hashtbl.t;              (* the previous rounds', and this round's *)
   var_loads : (int, int) Hashtbl.t;                 (* load site -> variable it read *)
   code_writes : (int, int list) Hashtbl.t;          (* image word stored to -> store sites *)
   data_reads : (int, int list) Hashtbl.t;           (* words read as data through constant addresses -> sites *)
@@ -476,8 +480,10 @@ let scan_vars img =
    (repeated rounds, address-taken candidates analysed on their own) *)
 let known_libvec : (int, int * int) Hashtbl.t = Hashtbl.create 256
 
-let create ?(copies = []) ?(var_known = Hashtbl.create 1) img = {
+let create ?(copies = []) ?(var_known = Hashtbl.create 1) ?(ret_known = Hashtbl.create 1)
+    ?(fall_known = Hashtbl.create 1) img = {
   copies; var_known; var_stores = Hashtbl.create 64; var_loads = Hashtbl.create 64;
+  ret_known; ret_stores = Hashtbl.copy ret_known; fall_known; fall_stores = Hashtbl.copy fall_known;
   code_writes = Hashtbl.create 64; pc_slots = Hashtbl.create 64; data_reads = Hashtbl.create 1024; cur_site = 0; tables = Hashtbl.create 64; follow = Hashtbl.create 64;
   owner = Hashtbl.create 8192; linked = Hashtbl.create 64;
   entry_consts = Hashtbl.create 256; roots = Hashtbl.create 16; sp_restores = scan_sp_restores img;
@@ -506,6 +512,10 @@ let map_addr t a = Option.value (unreloc t a) ~default:a
 (* An address in a slot (a copy loop's in-image destination, filled from
    somewhere unknown): its words are whatever was copied there last. *)
 let in_slot t a = List.exists (fun c -> c.src < 0 && a >= c.dst && a < c.dst + c.len) t.copies
+
+(* mov pc,lr or movs pc,lr, unconditional: a value stored into code that
+   makes it return there *)
+let is_return_word w = w land 0xFFEFFFFF = 0xE1A0F00E
 
 (* A constant that may be a code address, used as evidence (site, how). *)
 let note_candidates t v site how =
@@ -787,6 +797,12 @@ let note_store t ~f site av v ~byte =
     let w = IS.choose s land lnot 3 in
     if Image.inside t.img w then begin
       Hashtbl.replace t.code_writes w (site :: Option.value (Hashtbl.find_opt t.code_writes w) ~default:[]);
+      (match v with
+       | Consts c when not byte ->
+         if IS.exists is_return_word c then Hashtbl.replace t.ret_stores w ();
+         if IS.exists (fun x -> let i = Arm2.decode w x in Arm2.plausible i && not (Arm2.writes_pc i)) c then
+           Hashtbl.replace t.fall_stores w ()
+       | _ -> ());
       let v = if byte then Top else v in
       Hashtbl.replace t.var_stores w
         (match Hashtbl.find_opt t.var_stores w with Some old -> join_v old v | None -> v)
@@ -1377,8 +1393,14 @@ and analyse_function t f =
        let adds = match tb.tfield with
          | None -> [ tb.tadd ]
          | Some k -> use_field k; List.map (fun v -> v + tb.tadd) (IS.elements (field_values k)) in
+       (* a word loaded from a table: its entries are words, whatever the
+          index was scaled by (Gods' &18C48: ldr pc,[r8,r2] after mov
+          r2,r2,lsl #2 ; and r2,r2,#&ff, which leaves a stride of 1) - an
+          ARM2 load from an address not word-aligned rotates the word *)
+       let stride, limit =
+         if tb.stride land 3 = 0 then tb.stride, limit else 4, (limit * tb.stride + 3) / 4 in
        let rec scan base k acc =
-         let e = map_addr t (base + k * tb.stride) in
+         let e = map_addr t (base + k * stride) in
          if k >= limit || not (Image.inside img e) || Hashtbl.mem t.code e then acc
          else
            (* an entry written at run time holds the values stored to it *)
@@ -1699,12 +1721,28 @@ and analyse_function t f =
       if not (Hashtbl.mem t.owner a) then Hashtbl.replace t.owner a f;
       Hashtbl.remove t.data a;
       let next = a + 4 in
-      (* a self-modified word (stored to by pc-relative stores) holding a
-         transfer may be rewritten into an instruction that falls through
-         (FervourMode patches mov pc,lr into cmp r2,#mode): what follows
-         is code too *)
-      if Hashtbl.mem t.vars a && Arm2.always i && Arm2.writes_pc i then
+      (* a self-modified word holding a transfer may be rewritten into an
+         instruction that falls through: what follows is code too. A word
+         pc-relative stores write (FervourMode patches mov pc,lr into cmp
+         r2,#mode), or one a constant that is such an instruction is
+         stored into at its address, in an earlier round (Gods switches a
+         routine on with a NOP over its mov pc,lr, &1E8CC: str r0,[r1]
+         with r1 = pc + 8) *)
+      if (Hashtbl.mem t.vars a || (features.memory && Hashtbl.mem t.fall_known a))
+         && Arm2.always i && Arm2.writes_pc i then
         goto a next { st with fk = -1; cmp = None };
+      (* ...and the other way: a word code stores a return into (mov pc,lr,
+         a constant stored to its address, in an earlier round) may return
+         there, when LR still holds the function's return address (code
+         reached by plain flow from elsewhere, with LR whatever it was
+         there, isn't taken to). Gods switches routines off and on so, a
+         return or a NOP over an instruction, and calls &B838 with a return
+         patched in part way through, where it would otherwise run on into
+         a branch away *)
+      (match st.regs.(14) with
+       | Sym (Reg0 14, 0) when features.memory && Hashtbl.mem t.ret_known a && not (Arm2.writes_pc i) ->
+         jump a st st.regs.(14)
+       | _ -> ());
       if i.cond = Arm2.NV then goto a next st
       else
         let run =
@@ -2107,16 +2145,21 @@ let widen_vars img changes before vars vars' =
    changes. *)
 let spider img entries =
   let changes = Hashtbl.create 16 in
-  let rec go before copies vars n =
-    let t = create ~copies ~var_known:vars img in
+  let rec go before copies vars rets falls n =
+    let t = create ~copies ~var_known:vars ~ret_known:rets ~fall_known:falls img in
     run t entries;
     let vars' = next_var_known t in
     widen_vars img changes before vars vars';
+    (* the code words returns and instructions that fall through are
+       stored into: kept from round to round, so they only grow *)
     if n < 8 && not (exhausted ())
-       && (List.length t.copies > List.length copies || (features.memory && not (same_vars vars vars')))
-    then go vars t.copies (if features.memory then vars' else Hashtbl.create 1) (n + 1) else t
+       && (List.length t.copies > List.length copies || (features.memory && not (same_vars vars vars'))
+           || (features.memory && (Hashtbl.length t.ret_stores > Hashtbl.length rets
+                                   || Hashtbl.length t.fall_stores > Hashtbl.length falls)))
+    then go vars t.copies (if features.memory then vars' else Hashtbl.create 1) t.ret_stores t.fall_stores (n + 1)
+    else t
   in
-  go (Hashtbl.create 1) [] (Hashtbl.create 1) 0
+  go (Hashtbl.create 1) [] (Hashtbl.create 1) (Hashtbl.create 1) (Hashtbl.create 1) 0
 
 (* Phase 3b: address-taken entry points. Code addresses passed to SWIs or
    stored to memory by code already found are candidates, with evidence:

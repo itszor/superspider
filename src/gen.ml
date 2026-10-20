@@ -345,8 +345,28 @@ let natural_next c a w =
   else if w land 0x0FFFFFFF = 0x092D8000 && inside c (a + 4) && word c (a + 4) lsr 28 = 0xF then a + 8
   else a + 4
 
+(* The stride of a computed add pc,pc,X whose X is a multiple of a
+   constant just made: mov rK,#k ; mul X,rK,rY (or rY,rK) ; add pc,pc,X. *)
+let mul_stride c a =
+  if not (inside c (a - 8)) then None
+  else
+    let at x = Arm2.decode x (word c x) in
+    let add = at a and mul = at (a - 4) and mov = at (a - 8) in
+    match add.kind, mul.kind, mov.kind with
+    | Arm2.Dp { op = Arm2.ADD; rd = 15; rn = 15; op2 = Arm2.Reg (Arm2.Shift_imm (x, Arm2.LSL, 0)); _ },
+      Arm2.Mul { acc = false; rd; rs; rm; _ },
+      Arm2.Dp { op = Arm2.MOV; rd = r; op2 = Arm2.Imm (k, _); _ }
+      when Arm2.always mul && Arm2.always mov && rd = x && r <> x && (rs = r || rm = r)
+           && k > 0 && k land 3 = 0 -> Some k
+    | _ -> None
+
 (* The unrolled body after a computed add pc,pc,X: its repetition period,
-   and the block starts aligned to the end of the repeated run. *)
+   and the block starts aligned to the end of the repeated run - or, when X
+   is a multiple of a constant (mul_stride), a + 8 and every multiple of it
+   after. They differ when the run doesn't end on a block boundary: Gods'
+   &57760 enters blocks of 25 words at a + 8 + 100k (mov r7,#100 ; mul
+   r6,r7,r6), and the repetition goes on 18 words into the code after the
+   last block. *)
 let duff_entries c a =
   let s = a + 8 in
   let best = ref None in
@@ -361,6 +381,9 @@ let duff_entries c a =
     let fin = s + 4 * (n + p) in
     let ents = ref (IS.of_list [ a + 4; fin ]) and e = ref fin in
     while !e >= s do ents := IS.add !e !ents; e := !e - 4 * p done;
+    (match mul_stride c a with
+     | Some k -> e := s; while !e <= fin do ents := IS.add !e !ents; e := !e + k done
+     | None -> ());
     IS.elements !ents
 
 let create o inp ~data ~base =

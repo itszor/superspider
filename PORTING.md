@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer and James Pond. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond and Gods. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -217,10 +217,18 @@ fervour/) lists what it needed. The patterns so far:
 - jump tables of cases
 - records executed in place
 - setjmp/longjmp stacks
-- self-modified transfers
+- self-modified transfers, both ways: a transfer stored over may fall
+  through (pc-relative stores; or a constant instruction that falls
+  through stored at its address, through a register: Gods, Stunt Racer),
+  and a word a constant mov pc,lr is stored into may return there, while
+  LR is the function's own return address (Gods switches routines on and
+  off so, and calls one with a return patched in part way through)
 - unrolled loops entered part way through with add pc,pc,rX,lsl #k
   (k >= 3: blocks of 2^k bytes; Darkwood's Gouraud routines, Galactic
-  Dan's byte copies)
+  Dan's byte copies), or with add pc,pc,rX after mov rK,#k ; mul rX,rK,rY
+  (entries every k bytes from the start: Gods' 25-word blocks)
+- a jump table read by a word load: whole-word entries whatever stride
+  the index was left with (Gods: lsl #2 then and #&ff)
 - should-be-zero fields the ARM ignores (mov r3,r3,#&77: &E3A33077, Enter
   the Realm's engine): taken as code when ordinary code runs on into them,
   still not as a guess
@@ -269,7 +277,11 @@ adapt them:
 - Fervour for packed images, its own sound DMA, or a Wimp front end.
 - Chuck Rock or James Pond for a Krisalis conversion: a loader that
   decrunches the game (James Pond: JamesCode, unpacked to &B000 by
-  LOADER's own routine under arm2.py) and MusicModule.
+  LOADER's own routine under arm2.py) and MusicModule; Gods for two
+  squeezed AIF programs that !Run runs in turn (game.c starts the second
+  at the first's OS_Exit), two discs merged into one application, and
+  handlers held in the program's own tables (tools/unpack.py writes them
+  as roots).
 - Simon the Sorcerer for a C program with the C library linked in
   (ANSILib), many discs merged into one tree, or a music module that
   drives the sound hardware itself (Desktop Tracker).
@@ -318,6 +330,8 @@ to use it. Things each game needed:
 - James Pond: its raw IRQ handler at &100 entered in IRQ mode (it returns
   with movs pc,lr, which from a SWI's SVC mode dropped to USR mode), and
   &100 holding the OS's handler for it to pass interrupts on to
+- Gods: a Sound_Control amplitude below -15 starting the sound (its
+  intro's music)
 
 6. Close the gaps
 -----------------
