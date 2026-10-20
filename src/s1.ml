@@ -999,6 +999,11 @@ let refine ?(index = false) st c holds =
           (match mk_range l' (min h hi) step with Top -> cur | v -> v)
         | Top -> mk_range lo hi 1
         | Sym (Reg0 r', _) when r' <> 13 && r' <> 14 -> mk_range lo hi 1
+        | _ when index ->
+          (* the guarded index, whatever else is known of it (a field
+             loaded from memory: Elite's ldr r0,[r0,#&C4] ; cmp r0,#9 ;
+             addls pc,pc,r0,lsl #2) *)
+          mk_range lo hi 1
         | _ -> cur in
       let regs = Array.copy st.regs in
       regs.(r) <- nv;
@@ -1055,9 +1060,12 @@ let detect_copy_loop t head tail (entry : state) =
   | _ -> ()
 
 (* The block starts of a run of identical blocks (p words each, p at most
-   4, the smallest that repeats) ending at c, after the jump at a: at least
-   min_span_blocks of them, none with a transfer. [] if there's no such run. *)
+   max_span_words, the smallest that repeats) ending at c, after the jump
+   at a: at least min_span_blocks of them, none with a transfer. [] if
+   there's no such run. (Blocks of ten words: Desktop Tracker's mixers, a
+   sample from each of two channels per block.) *)
 let min_span_blocks = 4
+let max_span_words = 16
 
 let span_run img a c =
   let block p x = List.init p (fun k -> Image.word img (x + 4 * k)) in
@@ -1075,9 +1083,21 @@ let span_run img a c =
       let rec go x acc = if code_block p x && block p x = b then go (x - size) (x :: acc) else acc in
       go (c - size) [] in
   let rec first p =
-    if p > 4 then []
+    if p > max_span_words then []
     else match run p with l when List.length l >= min_span_blocks -> l | _ -> first (p + 1) in
   if Image.inside img c && c > a then first 1 else []
+
+(* The slots of a table of branches at x (where add pc,pc,rX,lsl #2 goes
+   with rX = 0): the unconditional b's from x on, or from x + 4 when x
+   holds no instruction (a slot the index never selects). At least two of
+   them; [] if there's no such run. *)
+let branch_table img x =
+  let is_b y = Image.inside img y
+               && (let i = Image.decode img y in
+                   Arm2.always i && (match i.kind with Arm2.Branch { link = false; _ } -> true | _ -> false)) in
+  let rec run y acc = if is_b y then run (y + 4) (y :: acc) else List.rev acc in
+  let from = if Image.inside img x && not (Arm2.plausible (Image.decode img x)) then x + 4 else x in
+  match run from [] with _ :: _ :: _ as l -> l | _ -> []
 
 let max_inline = 16
 
@@ -1852,6 +1872,17 @@ and analyse_function t f =
                 (match starts (a + 8) 0 [] with
                  | [] -> Hashtbl.replace t.follow a (); goto a (a + 8) st
                  | bs -> jump a st (Consts (IS.of_list bs)))
+              | Arm2.ADD, 15, Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, 2))
+                when (v = Top || unbounded v) && branch_table img (a + 8) <> [] ->
+                (* a table of branches (add pc,pc,rX,lsl #2 with rX
+                   unknown, followed by unconditional b's): every one of
+                   them. Its first slot may hold something that isn't an
+                   instruction when the index is never 0 (Desktop
+                   Tracker's mixers: rX the mask of the active channels,
+                   1-15, built by orrne's the analysis widens away) *)
+                let bs = branch_table img (a + 8) in
+                Hashtbl.replace t.tables a ("branch table", List.length bs);
+                jump a st (Consts (IS.of_list bs))
               | Arm2.ADD, 15, Arm2.Reg _ when v = Top || unbounded v ->
                 (* computed jump into the code that follows (add pc,pc,rX
                    with rX unknown, e.g. a Duff's device): assume rX >= 0 *)

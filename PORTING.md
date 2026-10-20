@@ -225,7 +225,13 @@ fervour/) lists what it needed. The patterns so far:
   the Realm's engine): taken as code when ordinary code runs on into them,
   still not as a guess
 - span fills entered backwards: add lr,pc,#k ; sub pc,lr,rX,<shift> into
-  a run of identical blocks ending at lr (Darkwood's MCMain2)
+  a run of identical blocks ending at lr (Darkwood's MCMain2; blocks of up
+  to 16 words: Desktop Tracker's mixer loops, 10)
+- tables of branches after add pc,pc,rX,lsl #2 with rX unknown: every b
+  in the run (its first slot may be no instruction when the index is never
+  0: Desktop Tracker's mixers, on a mask of active channels built with
+  orrne's); a guarded index (cmp rX,#n ; addls pc,...) is bounded by its
+  guard whatever else is known of it (a field loaded from memory: Elite)
 - computed jumps on a byte's bits (ldrb r0 ; add pc,pc,r0,lsr #4): a
   byte load is 0-255, and a jump's targets are word-aligned, as an ARM2
   takes them (Saloon Cars)
