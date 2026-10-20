@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4 and Simon the Sorcerer. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer and James Pond. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -261,6 +261,9 @@ adapt them:
 - Gyrinus II for modules and BASIC loaders.
 - Pushy II for a Wimp task, or a Risc PC mode (`vidc20`).
 - Fervour for packed images, its own sound DMA, or a Wimp front end.
+- Chuck Rock or James Pond for a Krisalis conversion: a loader that
+  decrunches the game (James Pond: JamesCode, unpacked to &B000 by
+  LOADER's own routine under arm2.py) and MusicModule.
 - Simon the Sorcerer for a C program with the C library linked in
   (ANSILib), many discs merged into one tree, or a music module that
   drives the sound hardware itself (Desktop Tracker).
@@ -306,6 +309,9 @@ to use it. Things each game needed:
 - Pushy II: the Wimp, VIDC20 modes and OS_ScreenMode
 - Fervour: Service_ModeExtension modes, MEMC sound DMA and IRQ device 9
 - Lemmings: key transition events
+- James Pond: its raw IRQ handler at &100 entered in IRQ mode (it returns
+  with movs pc,lr, which from a SWI's SVC mode dropped to USR mode), and
+  &100 holding the OS's handler for it to pass interrupts on to
 
 6. Close the gaps
 -----------------
