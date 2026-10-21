@@ -71,7 +71,9 @@ C options (gen, or analyse with --c):
                     that runs from a copy of itself)
   --range FROM-TO   only the code in [FROM, TO), as an image of its own: an overlay
                     analysed as part of the program it is loaded beside (an image
-                    of both), the program's code translated separately
+                    of both), the program's code translated separately. Repeatable:
+                    the code of all the ranges, in one image spanning them (the
+                    parts of a program translated, the rest native code)
   options may also be written --name=value
 |}
 
@@ -177,7 +179,7 @@ let parse_opts ~what rest =
     | "--range" :: x :: r ->
       gen_only ();
       (match String.split_on_char '-' x with
-       | [ lo; hi ] -> o.gen <- { o.gen with range = Some (int_of_hex lo, int_of_hex hi) }
+       | [ lo; hi ] -> o.gen <- { o.gen with range = o.gen.range @ [ int_of_hex lo, int_of_hex hi ] }
        | _ -> usage ());
       go r
     | "--leaders" :: l :: r ->

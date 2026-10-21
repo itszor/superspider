@@ -43,15 +43,17 @@ type options = {
   covtag : string;          (* the coverage recorder's tag for this image ("" none) *)
   leaders : leaders;
   banner : string;          (* what the generated files say generated them *)
-  range : (int * int) option;
-                            (* emit only the code in [from, to): an overlay analysed
-                               together with the program it is loaded beside (the
-                               program's code is translated separately; calls into it
-                               are dispatched) *)
+  range : (int * int) list;
+                            (* emit only the code in these [from, to) ranges (none: all
+                               of it): an overlay analysed together with the program it
+                               is loaded beside (the program's code is translated
+                               separately; calls into it are dispatched), or the parts
+                               of a program that are translated while the rest is not
+                               (native code in their place). The image spans them all *)
 }
 
 let default_options = { prefix = "F"; tabprefix = "recomp"; pcbias = false; files = 16; header = "gen";
-                        covtag = ""; leaders = All; banner = "superspider"; range = None }
+                        covtag = ""; leaders = All; banner = "superspider"; range = [] }
 
 let of_s1 (t : S1.t) ~entries =
   let keys h = List.sort compare (Hashtbl.fold (fun k _ acc -> k :: acc) h []) in
@@ -389,7 +391,9 @@ let duff_entries c a =
 let create o inp ~data ~base =
   let codes = List.sort compare (Hashtbl.fold (fun a () acc -> a :: acc) inp.code []) in
   let iend = base + String.length data in
-  let ebase, eend = Option.value o.range ~default:(base, iend) in
+  let ebase, eend = match o.range with
+    | [] -> base, iend
+    | rs -> List.fold_left (fun (lo, hi) (f, t) -> min lo f, max hi t) (max_int, min_int) rs in
   let c = { o; inp; data; base; iend; ebase; eend; owner_of = Hashtbl.create 8192;
             funcs = Hashtbl.create 1024; calls = Hashtbl.create 64; fallthrough = Hashtbl.create 64;
             duff = Hashtbl.create 16; smc = Hashtbl.create 16; smc_words = Hashtbl.create 16;
@@ -451,10 +455,10 @@ let create o inp ~data ~base =
   Hashtbl.iter (fun o _ -> add o) c.funcs;
   Hashtbl.filter_map_inplace (fun a () -> if is_code c a then Some () else None) l;
   c.leaders <- l;
-  if o.range <> None then begin
-    (* only the range's words: functions trimmed to them (each entered at its
-       first), and its leaders; a call or jump out of it is dispatched *)
-    let inr a = a >= ebase && a < eend in
+  if o.range <> [] then begin
+    (* only the ranges' words: functions trimmed to them (each entered at its
+       first), and their leaders; a call or jump out of them is dispatched *)
+    let inr a = List.exists (fun (f, t) -> a >= f && a < t) o.range in
     Hashtbl.filter_map_inplace (fun _ ws ->
         match List.filter inr ws with
         | [] -> None

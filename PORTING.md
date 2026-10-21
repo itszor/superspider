@@ -149,6 +149,14 @@ List every piece of ARM code that runs:
   --range FROM-TO` (calls out of the range are dispatched to the program's
   own translation). Chuck Rock's levels: GAME ends at &25928, where each
   level's code is unpacked, so GAME + CODEn is one image at &8000.
+- Only part of a program, with the rest native code: a program whose
+  source you have can be a hybrid, its C compiled for the host and only
+  its assembler translated (Cylon Attack, ~/games/cylon-attack). `gen
+  --range` repeated gives one image of just those ranges; calls out of
+  them are dispatched, so game.c's call_addr hook can send them to the
+  native functions, and shims call the translations at their addresses.
+  The README there has the boundary: one heap in emulated memory,
+  pointers passed as their addresses there.
 - Programs loaded later (`roger_config.programs`; an overlay loaded packed
   into a buffer and unpacked into place is selected by the buffer address,
   `roger_program.at`: Chuck Rock's CODE1-5), programs that
