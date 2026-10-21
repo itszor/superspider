@@ -156,7 +156,11 @@ List every piece of ARM code that runs:
   them are dispatched, so game.c's call_addr hook can send them to the
   native functions, and shims call the translations at their addresses.
   The README there has the boundary: one heap in emulated memory,
-  pointers passed as their addresses there.
+  pointers passed as their addresses there. Stib (~/games/stib) is one
+  whose C source was lost: reconstructed from a later port of it and the
+  binary, with the libraries it was linked with (DeskLib, the stubs)
+  translated too; its `make compare` checks the reconstruction against a
+  full recompilation, frame by frame.
 - Programs loaded later (`roger_config.programs`; an overlay loaded packed
   into a buffer and unpacked into place is selected by the buffer address,
   `roger_program.at`: Chuck Rock's CODE1-5), programs that
@@ -351,6 +355,9 @@ to use it. Things each game needed:
   interpreter (copy protection that stores over the instruction after
   next), chains of vector claimants, *Load of an Absolute, "^" in names,
   GSTrans ending at a control character
+- Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
+  its full recompilation), the vprintf family's va_list (an array in
+  Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow
 
 6. Close the gaps
 -----------------
