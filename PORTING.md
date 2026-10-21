@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond and Gods. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods and Phaethon. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -285,6 +285,12 @@ adapt them:
 - Simon the Sorcerer for a C program with the C library linked in
   (ANSILib), many discs merged into one tree, or a music module that
   drives the sound hardware itself (Desktop Tracker).
+- Phaethon for a program that unpacks and decrypts itself in several
+  layers at run time, with the images taken up part way through (game.c
+  switches between interpreting and translated images at the addresses
+  control reaches; tools/unpack.c writes the images at the same points):
+  roots, not --exec, for an image entered with a return address the
+  analysis can't know.
 
 Fill in from what !Run did:
 
@@ -332,6 +338,11 @@ to use it. Things each game needed:
   &100 holding the OS's handler for it to pass interrupts on to
 - Gods: a Sound_Control amplitude below -15 starting the sound (its
   intro's music)
+- Phaethon: the SWI vector at &8 (a program's own handler there, and the
+  OS's branch for it to pass SWIs on to), the ARM2's prefetch in the
+  interpreter (copy protection that stores over the instruction after
+  next), chains of vector claimants, *Load of an Absolute, "^" in names,
+  GSTrans ending at a control character
 
 6. Close the gaps
 -----------------
