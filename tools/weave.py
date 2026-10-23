@@ -26,7 +26,8 @@ default ~/games/*. INPUT is a .zip (its members are examined) or a disc
 image or archive: .adf (ADFS D/E/F, via adf_extract.py), .hfe (an HxC
 floppy image, decoded to sectors by hfe.py, then as an .adf), .jfd
 (JASPP's ADFFS image, gzipped or not, decoded to sectors by jfd.py, then
-as an .adf), an ArcFS
+as an .adf; from either, a ZFiler-protected disc's hidden files too, beside
+their empty placeholders: zfiler.py), an ArcFS
 archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
 arcfs.py) or a Spark archive (&DDC too, ARC's &1A header with the RISC OS
 bit, via spark.py); a zip member too. A "disc" in a recipe is then the
@@ -79,6 +80,7 @@ sys.path.insert(0, TOOLS)
 from spark import is_spark   # noqa: E402
 import hfe                   # noqa: E402
 import jfd                   # noqa: E402
+import zfiler                # noqa: E402
 from implode import read_member   # noqa: E402
 
 
@@ -167,6 +169,14 @@ def unzip_plain(z, dst):
             o.write(read_member(z, info))
 
 
+def is_zip(path):
+    """a zip file: zipfile.is_zipfile only looks for an end record, which a
+    disc image may hold in its free space (Chocks Away's 2000 release has a
+    zip's left over there)"""
+    with open(path, 'rb') as f:
+        return f.read(4) in (b'PK\3\4', b'PK\5\6') and zipfile.is_zipfile(path)
+
+
 def images_in(inputs, tmp):
     """every disc image in the inputs: (name, path, container sha256 or None);
     path is a directory for a plain disc"""
@@ -174,7 +184,7 @@ def images_in(inputs, tmp):
     for p in inputs:
         if os.path.isdir(p):
             out.append((os.path.basename(os.path.normpath(p)), p, None))
-        elif zipfile.is_zipfile(p):
+        elif is_zip(p):
             ch = sha256(p)
             with zipfile.ZipFile(p) as z:
                 n0 = len(out)
@@ -247,6 +257,8 @@ class Disc:
             r = subprocess.run([sys.executable, '-I', os.path.join(TOOLS, tool), img, self.tree],
                                capture_output=True, text=True)
             self.clean = r.returncode == 0
+            if self.raw_ext != '.img':              # a ZFiler disc's hidden files
+                zfiler.reveal(zfiler.sectors_of(path), data, self.tree)
         else:
             self.clean = True
         self._files = {}
