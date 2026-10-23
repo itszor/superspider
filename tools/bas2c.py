@@ -43,7 +43,9 @@ Semantics kept from BASIC:
 - The assembler ([ ... ]) is translated by basasm.py: C that assembles at
   run time, at P%, with the operands' values then (labels are variables).
   A statement it can't translate is left to the game's bas_asm(text).
-- CHAIN (bas_chain), PAGE=, MID$()=, ON ERROR OFF, VPOS/POS.
+- CHAIN (bas_chain), PAGE=, MID$()=, ON ERROR OFF, VPOS/POS, PTR#, CLEAR (the
+  variables unset, A%-Z% kept, and DIM's heap back where it started:
+  Saloon Cars Deluxe's DIM of a megabyte to see whether it has 2MB).
 Names: x% -> x_I, x -> x_R, x$ -> x_S; arrays x%() -> x_AI, x() -> x_AR,
 x$() -> x_AS; PROCx -> PROC_x, FNx -> FN_x; a backtick becomes _Q_.
 """
@@ -486,10 +488,10 @@ class Trans:
             self.expect('op', '#')
             a, t = self.unary()
             return 'bas_bget(%s)' % self.toint(a, t), 'i'
-        if v == 'EXT':
+        if v in ('EXT', 'PTR'):
             self.expect('op', '#')
             a, t = self.unary()
-            return 'bas_ext(%s)' % self.toint(a, t), 'i'
+            return 'bas_%s(%s)' % (v.lower(), self.toint(a, t)), 'i'
         if v == 'TINT':
             raise Fail('TINT')
         raise Fail('line %s: keyword %s in expression' % (tok.line, v))
@@ -523,7 +525,7 @@ class Trans:
         while True:
             if self.at('nl'):
                 if not inline and self.peek().val is not None and self.at('kw', 'DEF', 1) and self.loops \
-                        and self.cur_routine:
+                        and self.cur_routine and self.closed_later():
                     out += self.skip_def()
                     continue
                 if inline or self.peek().val is None or self.at('kw', 'DEF', 1):
@@ -540,6 +542,13 @@ class Trans:
             if inline and self.at('kw', 'ELSE'):
                 return out
             out += self.statement()
+
+    def closed_later(self):
+        """the innermost open loop is closed somewhere after here (an UNTIL or
+        NEXT): one that never is (Saloon Cars Deluxe's cheat menu, its UNTIL
+        a REM) ends with its routine, not around the DEF after it"""
+        end = 'UNTIL' if self.loops[-1][0] == 'REPEAT' else 'NEXT'
+        return any(t.kind == 'kw' and t.val == end for t in self.t[self.p:])
 
     def skip_def(self):
         """A DEF line inside a loop of the routine before it (DefKeys' FNkey:
@@ -774,6 +783,10 @@ class Trans:
 
     def s_STOP(self):                            # an error: number 0, "Stopped"
         return ['bas_error(0, "Stopped");']
+
+    def s_CLEAR(self):                           # the variables unset, DIM's heap from its start
+        self.uses_clear = True
+        return ['clear_(); bas_clear();']
 
     def s_LOCAL(self):
         if self.accept('kw', 'ERROR'):
@@ -1123,6 +1136,13 @@ class Trans:
             return ['bas_bput(%s, %s);' % (self.toint(h, ht), self.toint(c, t))]
         return ['bas_bput_s(%s, %s, %d);' % (self.toint(h, ht), c, 0 if self.accept('op', ';') else 1)]
 
+    def s_PTR(self):                             # PTR#h = n
+        self.expect('op', '#')
+        h, ht = self.unary()
+        self.expect('op', '=')
+        c, t = self.expr()
+        return ['bas_ptr_set(%s, %s);' % (self.toint(h, ht), self.toint(c, t))]
+
     def s_INPUT(self):
         self.expect('op', '#')
         c, t = self.unary()
@@ -1349,6 +1369,10 @@ def emit(tr, toks, progname=None, size=0):
     for a in sorted(tr.arrays):
         out.append('static ARR_%s %s;' % (vtype(a), cname(a, True)))
         clear.append('free(%s.p); %s.p = NULL;' % ((cname(a, True),) * 2))
+    uses_clear = getattr(tr, 'uses_clear', False)
+    has_clear = progname or uses_clear
+    if uses_clear:
+        out.append('static void clear_(void);')
     out += tr.globals_extra
     if tr.top_handlers:
         out.append('static HND bas_top;                      /* ON ERRORs set in PROCs/FNs */')
@@ -1470,12 +1494,13 @@ def emit(tr, toks, progname=None, size=0):
         out.append('    ;')
         out.append('}')
         out.append('')
-    if progname:
+    if has_clear:
         out.append('static void clear_(void)')
         out.append('{')
         out += ['    ' + x for x in clear]
         out.append('}')
         out.append('')
+    if progname:
         out.append('const struct bas_program bas_prog_%s = {%s, main_, data_, clear_, %d};' % (progname[0], cstr(progname[1]), size))
     return '\n'.join(out) + '\n'
 

@@ -94,12 +94,20 @@ ARRAY(double, r)
 ARRAY(S, s)
 
 /* --- DIM x% n: a block from the heap above the program (bas_lomem) */
+static uint32_t heap_start;                 /* bas_lomem before the first DIM (0: none yet) */
+
 uint32_t dim(int bytes)
 {
     uint32_t a = bas_lomem;
+    if (!heap_start) heap_start = a;
     bas_lomem = (bas_lomem + bytes + 3) & ~3u;
     if (bas_dim_clear) memset(MEM + a, 0, bytes);
     return a;
+}
+
+void bas_clear(void)
+{
+    if (heap_start) bas_lomem = heap_start;
 }
 
 /* --- the undo stack of saved variables */
@@ -325,6 +333,8 @@ void bas_bput_s(int32_t h, S v, int nl)
     if (nl) bput(h, 10);
 }
 int32_t bas_ext(int32_t h) { R[0] = 2; R[1] = h; roger_swi(0x20009); return (int32_t)R[2]; }   /* OS_Args 2 */
+int32_t bas_ptr(int32_t h) { R[0] = 0; R[1] = h; roger_swi(0x20009); return (int32_t)R[2]; }   /* OS_Args 0 */
+void bas_ptr_set(int32_t h, int32_t p) { R[0] = 1; R[1] = h; R[2] = p; roger_swi(0x20009); }  /* OS_Args 1 */
 void bas_print_i(int32_t h, int32_t v) { bput(h, 0x40); for (int k = 24; k >= 0; k -= 8) bput(h, v >> k); }
 void bas_print_r(int32_t h, double v) { bas_print_i(h, (int32_t)v); }   /* (not BASIC's 5-byte reals) */
 void bas_print_s(int32_t h, S v)
@@ -451,6 +461,7 @@ void bas_run(const struct bas_program *const *progs, const struct bas_program *f
     data_p = 0;
     datap = bas_current->data;
     bas_lomem = ((uint32_t)bas_page + bas_current->size + 3) & ~3u;
+    heap_start = bas_lomem;
     memset(scratch_buf, 0, sizeof scratch_buf);
     osword_blk = time_out = call_stack = 0;
     bas_line = 0;

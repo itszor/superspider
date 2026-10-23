@@ -118,6 +118,15 @@ loads it to. Run `superspider` with no arguments for the full option list.
     unformatted, so with the image as the floppy that check passes too.
     ADFSlib pads such a short image (old map or new) to read its files.
 
+  - Files decrypted as they load: Enter the Realm's version 2 (Merlin)
+    and Saloon Cars Deluxe (ROBIN), both The Fourth Dimension's, 1992. A
+    loader decrypts itself in layers and inserts a module that reads a
+    key from sectors only the original disc has (Merlin: one with a bad
+    CRC; ROBIN: four of 256 bytes on track 79), claims FileV and XORs
+    every file loaded while it's there with it. Their tools/images.py read the key from the .jfd
+    (`"raw": true`; `jfd.tracks()` has the odd sectors) and decrypt the
+    files; game.c stands in for the loader and the module's commands.
+
   The image you translate is the one that actually runs, at the address it
   runs from.
 - The game data stays as the original files. libroger maps the game's
@@ -178,7 +187,8 @@ List every piece of ARM code that runs:
   bas_cli) before calling bas_main(). bas2c handles GOTOs between PROCs,
   PROCs that run on into the next DEF, and ON ERRORs set in PROCs (Saloon
   Cars' RACE); GOTOs between a PROC and the main program and a DEF met
-  inside a loop (Enter the Realm); see its docstring.
+  inside a loop (Enter the Realm); CLEAR and PTR# (Saloon Cars Deluxe);
+  see its docstring.
   - Several programs that CHAIN one another (Enter the Realm's eighteen):
     translate each with `bas2c.py --name N --riscos NAME` (NAME the last
     components of its RISC OS name, which CHAIN looks for) and start the
@@ -426,7 +436,7 @@ built from. `weave.py index` writes recipes.json, every recipe's
 fingerprints in one file. Chocks Away was the first (~/games/chocks-away);
 every game has one now. Their inputs: TOSEC zips of disc images (Twin
 World, Gyrinus II, Stunt Racer 2000, Fervour, Lemmings), disc images
-(Warlocks, Galactic Dan, Ego: Repton 4, Enter the Realm's three; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
+(Warlocks, Galactic Dan, Ego: Repton 4, Enter the Realm's three, Saloon Cars Deluxe's three; Darkwood's six HxC .hfe images), ArcFS archives (Zool, Pac-Mania), and zips of
 plain files or directories (Pushy II, Elite, Saloon Cars - SparkFS-imploded: the filetypes from the zip's
 RISC OS extra fields). A disc's "game_dirs" entry "$" copies the whole
 disc into game/ (Warlocks' data disc, read from its root); directories of

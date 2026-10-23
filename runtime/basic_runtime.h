@@ -59,6 +59,7 @@ void all_s(ARR_s *a, S v);
 #define PK(a)      (*(int32_t *)(MEM + (uint32_t)(a)))        /* !a */
 #define PB(a)      (MEM[(uint32_t)(a)])                       /* ?a */
 uint32_t dim(int bytes);                   /* DIM x% bytes-1 */
+void bas_clear(void);                      /* CLEAR: DIM's heap back where it started */
 extern int32_t bas_page;                   /* PAGE (the game defines it) */
 extern uint32_t bas_lomem;                 /* the heap DIM takes blocks from: its next free
                                               address, at first the program's TOP rounded up
@@ -167,6 +168,8 @@ int bas_bget(int32_t h);
 void bas_bput(int32_t h, int c);
 void bas_bput_s(int32_t h, S v, int nl);   /* BPUT#h, string (+ LF unless nl is 0) */
 int32_t bas_ext(int32_t h);                /* EXT#h */
+int32_t bas_ptr(int32_t h);                /* PTR#h */
+void bas_ptr_set(int32_t h, int32_t p);    /* PTR#h = p */
 void bas_print_i(int32_t h, int32_t v);
 void bas_print_r(int32_t h, double v);
 void bas_print_s(int32_t h, S v);
