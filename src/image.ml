@@ -2,10 +2,31 @@
 
 type t = { data : string; base : int; size : int }
 
+(* The image's habit for test ops' should-be-zero rd (Arm2.test_rd_habit):
+   of the unconditional test ops among its words (cmp, cmn, tst, teq with S
+   set and rd not r15), more than half, and at least 8, have the same
+   non-zero rd. An image whose assembler leaves 0 there has only stray data
+   words with other values (Gods: 5 of 4070). *)
+let test_rd_habit data =
+  let counts = Array.make 16 0 and total = ref 0 in
+  for k = 0 to String.length data / 4 - 1 do
+    let w = Int32.to_int (String.get_int32_le data (4 * k)) land 0xFFFFFFFF in
+    let op = (w lsr 21) land 15 and rd = (w lsr 12) land 15 in
+    if w lsr 28 = 0xE && (w lsr 26) land 3 = 0 && op >= 8 && op <= 11 && (w lsr 20) land 1 = 1
+       && not ((w lsr 25) land 1 = 0 && (w lsr 4) land 9 = 9) && rd <> 15 then begin
+      incr total;
+      counts.(rd) <- counts.(rd) + 1
+    end
+  done;
+  let best = ref 1 in
+  for rd = 2 to 14 do if counts.(rd) > counts.(!best) then best := rd done;
+  if counts.(!best) >= 8 && 2 * counts.(!best) > !total then !best else 0
+
 let load path base =
   let ic = open_in_bin path in
   let data = really_input_string ic (in_channel_length ic) in
   close_in ic;
+  Arm2.test_rd_habit := test_rd_habit data;
   { data; base; size = String.length data }
 
 let inside img a = a >= img.base && a + 4 <= img.base + img.size

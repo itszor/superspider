@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon and Tertis. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis and Lemmings 2. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -283,6 +283,14 @@ fervour/) lists what it needed. The patterns so far:
   slot (an interpreter's opcode 0), -1 as an unset pointer (SIG_ERR)
 - an unconditional undefined instruction that ordinary code runs into: a
   trap through the program's own vector at &4 (Desktop Tracker)
+- an assembler that doesn't clear test ops' should-be-zero Rd (Lemmings
+  2: cmp r0,#&100 is &E3502C01): when most of an image's test ops share a
+  non-zero Rd, any Rd is taken as code in that image
+- a table of routines a module hands back from a SWI (KrisHardware's
+  Kris_RoutinesBase: add r0,pc,#0 returned, a run of branches): each
+  branch an address-taken entry; the program's jump into it with lr its
+  caller's (add pc,r6,r7,lsl #2) is a tail call that returns with
+  `--with tailcall` (opt-in: it changed Gods' and K2's analyses)
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to

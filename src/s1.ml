@@ -24,7 +24,10 @@
      instruction + 4 (add lr,pc,#0 ; mov pc,r2) calls something that returns
      to lr, clobbering r0-r3, r12 and r14; likewise one made with a code
      address pushed on top of the stack (add r0,pc,#k ; push ; jump) returns
-     there, popping it and clobbering every register but SP;
+     there, popping it and clobbering every register but SP; and (--with
+     tailcall) one made with lr still the function's own return address is
+     a tail call that returns to the function's caller, clobbering r0-r3,
+     r12 and r14;
    - stack balance: where SP has become unknown (e.g. a loop popping a
      data-dependent number of words), a PC popped off the stack is the one
      saved return value in the function's frame, if there is exactly one;
@@ -65,7 +68,8 @@ and tab = { tbase : int; more : int list; stride : int; tadd : int; limit : int 
 (* The mechanisms beyond the core analysis (summaries of returns and stack,
    constant jumps, OS_WriteS, the hand-linked call and stack balance
    assumptions). Each can be turned on separately; the core alone always
-   finishes quickly. --full turns on all but global_r12 (what s1b did). *)
+   finishes quickly. --full turns on all but global_r12 and tailcall (what
+   s1b did). *)
 type features = {
   mutable tables : bool;          (* phase 4: bounded computed jumps, jump tables, tables of cases *)
   mutable memory : bool;          (* phase 5: values carried in variables, over repeated rounds *)
@@ -76,6 +80,8 @@ type features = {
   mutable dispatch : bool;        (* multi-way dispatch with lr set: each target a function *)
   mutable global_r12 : bool;      (* r12 is a workspace pointer all through (see note_entry_consts) *)
   mutable clib : bool;            (* calls into the Shared C Library's entry vectors (see lib_call) *)
+  mutable tailcall : bool;        (* an unresolved jump with lr the function's own return address
+                                     returns to its caller (see unknown_jump; not for every program) *)
 }
 
 (* Code in other images (--extern FROM-TO): a program split over several
@@ -91,9 +97,11 @@ let extern_targets : (int, unit) Hashtbl.t = Hashtbl.create 64
 let in_extern a = List.exists (fun (lo, hi) -> a >= lo && a < hi) !externs
 
 let features = { tables = false; memory = false; copies = false; fields = false; inline = false;
-                 longjmp = false; dispatch = false; global_r12 = false; clib = false }
+                 longjmp = false; dispatch = false; global_r12 = false; clib = false;
+                 tailcall = false }
 
-let feature_names = [ "tables"; "memory"; "copies"; "fields"; "inline"; "longjmp"; "dispatch"; "clib"; "global-r12" ]
+let feature_names = [ "tables"; "memory"; "copies"; "fields"; "inline"; "longjmp"; "dispatch"; "clib"; "global-r12";
+                       "tailcall" ]
 
 let set_feature name on =
   match name with
@@ -101,16 +109,17 @@ let set_feature name on =
   | "copies" -> features.copies <- on | "fields" -> features.fields <- on
   | "inline" -> features.inline <- on | "longjmp" -> features.longjmp <- on
   | "dispatch" -> features.dispatch <- on | "global-r12" -> features.global_r12 <- on
-  | "clib" -> features.clib <- on
+  | "clib" -> features.clib <- on | "tailcall" -> features.tailcall <- on
   | _ -> invalid_arg name
 
-let set_full () = List.iter (fun n -> if n <> "global-r12" then set_feature n true) feature_names
+let set_full () = List.iter (fun n -> if n <> "global-r12" && n <> "tailcall" then set_feature n true) feature_names
 
 let enabled_features () =
   List.filter (fun n -> match n with
       | "tables" -> features.tables | "memory" -> features.memory | "copies" -> features.copies
       | "fields" -> features.fields | "inline" -> features.inline | "longjmp" -> features.longjmp
-      | "dispatch" -> features.dispatch | "clib" -> features.clib | _ -> features.global_r12) feature_names
+      | "dispatch" -> features.dispatch | "clib" -> features.clib | "tailcall" -> features.tailcall
+      | _ -> features.global_r12) feature_names
 
 (* A hard bound on the whole analysis: instructions stepped, over every
    function analysis, round and address-taken candidate. When it runs out
@@ -1534,6 +1543,7 @@ and analyse_function t f =
           Printf.eprintf "dispatch in &%x, lr &%x: %s\n%!" f r
             (String.concat " " (List.map (Printf.sprintf "&%x") (IS.elements targets)));
         IS.iter (fun c ->
+            if Image.inside img c then
             let i = Image.decode img c in
             let c' = match i.kind with
               | Arm2.Branch { link = false; target } when Arm2.always i -> map_addr t target
@@ -1556,6 +1566,15 @@ and analyse_function t f =
         | Consts s, _ when IS.equal s (IS.singleton (a + 4)) ->
           Hashtbl.replace t.assumed a ();
           propagate (a + 4) (clobber st [ 0; 1; 2; 3; 12; 14 ])
+        | Sym (Reg0 14, 0), _ when features.tailcall && not (pushed_return st) ->
+          (* --with tailcall: lr still the function's own return address -
+             a tail call into code that returns to the caller, clobbering as
+             a hand-linked call does (Lemmings 2 calls its KrisHardware
+             module's routines so: add pc,r6,r7,lsl #2, r6 the table
+             Kris_RoutinesBase gave). Not the default: it changed others'
+             analyses (Gods took data as code) *)
+          Hashtbl.replace t.assumed a ();
+          summary := add_exit !summary { pc = st.regs.(14); st = clobber st [ 0; 1; 2; 3; 12; 14 ]; at = a }
         | _, (Consts rs as r) when pushed_return st ->
           (* return address pushed on the stack before the jump *)
           Hashtbl.replace t.assumed a ();
@@ -2274,6 +2293,33 @@ let spider_with_address_taken img entries =
         end in
       scan img.Image.base
     end;
+    (* code addresses handed back to the caller of an entry point (in a
+       register when it returns: a module SWI that gives out the address of
+       its routines, as Lemmings 2's KrisHardware's Kris_RoutinesBase does):
+       weak evidence; one that starts a run of unconditional branches is a
+       table of routines, each branch an entry (strong) *)
+    List.iter (fun e ->
+        List.iter (fun (x : exit_) ->
+            for r = 0 to 12 do
+              match x.st.regs.(r) with
+              | Consts cs ->
+                IS.iter (fun c ->
+                    let branch a = Image.inside img a && Arm2.always (Image.decode img a) &&
+                                   (match (Image.decode img a).kind with
+                                    | Arm2.Branch { link = false; _ } -> true | _ -> false) in
+                    let rec len k = if k < 256 && branch (c + 4 * k) then len (k + 1) else k in
+                    let n = if c land 3 = 0 then len 0 else 0 in
+                    if n >= 2 then
+                      (* a table: its branches are code (strong evidence) *)
+                      for k = 0 to n - 1 do
+                        note_candidates t (const (c + 4 * k)) x.at
+                          (Printf.sprintf "returned by entry &%x in r%d, routine %d: table code" e r k)
+                      done
+                    else note_candidates t (const c) x.at (Printf.sprintf "returned by entry &%x in r%d" e r)) cs
+              | _ -> ()
+            done)
+          (Option.value (Hashtbl.find_opt t.summaries e) ~default:[]))
+      entries;
     let fresh = Hashtbl.fold (fun c _ acc ->
         if Hashtbl.mem decided c || Hashtbl.mem t.code c || Hashtbl.mem t.data c then acc else c :: acc)
         t.cands [] in

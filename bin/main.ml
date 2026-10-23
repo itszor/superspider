@@ -37,7 +37,7 @@ entry points (BASE, or --exec, for an absolute; the header's for a module):
 
 analysis (the core always runs: returns and stack through summaries, constant
 jumps, OS_WriteS, hand-linked calls, stack balance):
-  --full            all the mechanisms below except global-r12
+  --full            all the mechanisms below except global-r12 and tailcall
   --with A,B..      turn mechanisms on:
                       tables         bounded computed jumps, jump tables, tables of cases
                       memory         values carried in variables (repeated rounds); setters
@@ -49,6 +49,8 @@ jumps, OS_WriteS, hand-linked calls, stack balance):
                       address-taken  code addresses passed to SWIs or stored: analysed, accepted
                                      as entry points if they look like code
                       global-r12     r12 is a workspace pointer all through (not for every program)
+                      tailcall       an unresolved jump with lr the function's own return address
+                                     returns to its caller (not for every program)
   --without A,B..   turn mechanisms off (e.g. after --full)
   --global-r12      = --with global-r12
   --budget N        stop after N instruction steps in all (default 100000000); the

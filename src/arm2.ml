@@ -171,6 +171,14 @@ let is_undefined i = match i.kind with Undefined _ -> true | _ -> false
    them: should-be-zero fields that aren't (rn of mov/mvn, rd of the test
    ops other than the P forms), empty register lists, writeback to r15,
    mul with rd = rm or rd = r15 (unpredictable on ARM2). *)
+(* The should-be-zero rd most of an image's test ops are written with,
+   when it isn't 0 (Image.load sets it from the image's own words): some
+   assemblers don't clear the field - Lemmings 2's, by Krisalis, writes
+   cmp r0,#&100 as &E3502C01 (rd 2) all through its code, and cmp r0,lr as
+   &E150400E (rd 4). In such an image a test op's rd says nothing about
+   whether it is code: any rd is plausible. *)
+let test_rd_habit = ref 0
+
 let implausible_reason i =
   match i.kind with
   | Undefined why -> Some why
@@ -179,7 +187,8 @@ let implausible_reason i =
   | Cop { cp = 15; ck = (Mrc | Mcr); _ } -> None
   | Cop { cp; _ } when cp <> 1 && cp <> 2 -> Some (Printf.sprintf "coprocessor %d" cp)
   | Dp { op = (MOV | MVN); rn; _ } when rn <> 0 -> Some "mov/mvn with rn <> 0"
-  | Dp { op; rd; _ } when is_test op && rd <> 0 && rd <> 15 -> Some "test op with rd <> 0"
+  | Dp { op; rd; _ } when is_test op && rd <> 0 && rd <> 15 && !test_rd_habit = 0 ->
+    Some "test op with rd <> 0"
   | Block { regs = 0; _ } -> Some "empty register list"
   | Block { rn = 15; wb = true; _ } -> Some "writeback to r15"
   | Mem { rn = 15; wb; pre; _ } when wb || not pre -> Some "writeback to r15"
