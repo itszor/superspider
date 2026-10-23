@@ -65,7 +65,7 @@ let trace t a fn =
     else if Hashtbl.mem t.data a then problem t a fn "flowed into data"
     else
       let i = Image.decode img a in
-      if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.psr_transfer i)
+      if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.later_arm i)
          && not ((Arm2.sbz_only i || Arm2.undefined_trap i) && Hashtbl.mem t.code (a - 4)
                && Arm2.runs_on (Image.decode img (a - 4))) then
         problem t a fn ("invalid: " ^ Arm2.to_string i)

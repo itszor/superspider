@@ -12,6 +12,10 @@
      ldm with ^ and r15 in the list restores the PSR.
    - No halfword/signed transfers and no BX: those encodings are undefined
      here. SWP exists from ARM3 on and is decoded.
+   - The long multiplies (UMULL, UMLAL, SMULL, SMLAL: ARMv3M, so on a Risc
+     PC only the StrongARM has them) are decoded, for programs written for
+     it (DFI's demos). Like MRS and MSR they are implausible as guessed code
+     but code when flow reaches them.
    - MRS and MSR (ARMv3) are decoded, for programs that run on both 26-bit
      and 32-bit RISC OS: they test which they are on (teq pc,pc; or mov
      lr,#0 ; mrs lr,cpsr ; tst lr,#&1c) and take a path with or without
@@ -52,6 +56,7 @@ type kind =
   | Dp of { op : dp_op; s : bool; rd : int; rn : int; op2 : operand2 }
   | Mul of { acc : bool; s : bool; rd : int; rn : int; rs : int; rm : int }
   | Swp of { byte : bool; rd : int; rm : int; rn : int }
+  | Mull of { signed : bool; acc : bool; s : bool; rdhi : int; rdlo : int; rs : int; rm : int }
   | Mem of { load : bool; byte : bool; pre : bool; up : bool; wb : bool;
              rd : int; rn : int; off : offset }
   | Block of { load : bool; pre : bool; up : bool; wb : bool; psr : bool;
@@ -102,6 +107,9 @@ let decode_kind addr w =
   | 0 when field w 4 4 = 0b1001 && field w 23 5 = 0b00010 && field w 20 2 = 0
            && field w 8 4 = 0 ->
     Swp { byte = bit w 22; rd = field w 12 4; rm = field w 0 4; rn = field w 16 4 }
+  | 0 when field w 4 4 = 0b1001 && field w 23 5 = 0b00001 ->
+    Mull { signed = bit w 22; acc = bit w 21; s = bit w 20; rdhi = field w 16 4;
+           rdlo = field w 12 4; rs = field w 8 4; rm = field w 0 4 }
   | 0 when bit w 7 && bit w 4 ->
     Undefined "halfword/long-multiply space (ARMv4+)"
   | (0 | 1) as t ->
@@ -167,6 +175,7 @@ let implausible_reason i =
   match i.kind with
   | Undefined why -> Some why
   | Mrs _ | Msr _ -> Some "MRS/MSR (ARMv3)"
+  | Mull _ -> Some "long multiply (ARMv3M)"
   | Cop { cp = 15; ck = (Mrc | Mcr); _ } -> None
   | Cop { cp; _ } when cp <> 1 && cp <> 2 -> Some (Printf.sprintf "coprocessor %d" cp)
   | Dp { op = (MOV | MVN); rn; _ } when rn <> 0 -> Some "mov/mvn with rn <> 0"
@@ -179,8 +188,9 @@ let implausible_reason i =
 
 let plausible i = implausible_reason i = None
 
-(* MRS or MSR: code when flow reaches it, though not when guessing *)
-let psr_transfer i = match i.kind with Mrs _ | Msr _ -> true | _ -> false
+(* An instruction of a later ARM than the ARM2/ARM3 (MRS, MSR, the long
+   multiplies): code when flow reaches it, though not when guessing *)
+let later_arm i = match i.kind with Mrs _ | Msr _ | Mull _ -> true | _ -> false
 
 (* Implausible only for a should-be-zero field the CPU ignores (rn of
    mov/mvn, rd of a test op): code if ordinary code runs on into it. An
@@ -206,6 +216,7 @@ let defs i =
   match i.kind with
   | Dp { op; rd; _ } -> if is_test op then [] else [ rd ]
   | Mul { rd; _ } -> [ rd ]
+  | Mull { rdhi; rdlo; _ } -> [ rdlo; rdhi ]
   | Swp { rd; _ } -> [ rd ]
   | Mem { load; pre; wb; rd; rn; _ } ->
     let base = if wb || not pre then [ rn ] else [] in
@@ -226,6 +237,7 @@ let uses i =
     (if op = MOV || op = MVN then [] else [ rn ])
     @ (match op2 with Imm _ -> [] | Reg s -> shifted_uses s)
   | Mul { acc; rn; rs; rm; _ } -> (if acc then [ rn ] else []) @ [ rs; rm ]
+  | Mull { acc; rdhi; rdlo; rs; rm; _ } -> (if acc then [ rdlo; rdhi ] else []) @ [ rs; rm ]
   | Swp { rm; rn; _ } -> [ rm; rn ]
   | Mem { load; rd; rn; off; _ } ->
     (if load then [] else [ rd ]) @ [ rn ]
@@ -292,6 +304,9 @@ let to_string i =
   | Mul { acc; s; rd; rn; rs; rm } ->
     if acc then Printf.sprintf "mla%s%s %s, %s, %s, %s" c (if s then "s" else "") (reg rd) (reg rm) (reg rs) (reg rn)
     else Printf.sprintf "mul%s%s %s, %s, %s" c (if s then "s" else "") (reg rd) (reg rm) (reg rs)
+  | Mull { signed; acc; s; rdhi; rdlo; rs; rm } ->
+    Printf.sprintf "%s%s%s%s %s, %s, %s, %s" (if signed then "s" else "u") (if acc then "mlal" else "mull")
+      c (if s then "s" else "") (reg rdlo) (reg rdhi) (reg rm) (reg rs)
   | Swp { byte; rd; rm; rn } ->
     Printf.sprintf "swp%s%s %s, %s, [%s]" c (if byte then "b" else "") (reg rd) (reg rm) (reg rn)
   | Mem { load; byte; pre; up; wb; rd; rn; off } ->

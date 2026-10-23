@@ -69,6 +69,9 @@ C options (gen, or analyse with --c):
                     is known to arrive indirectly (smaller, needs complete roots)
   --pcbias          PC-derived values relative to the runtime's pc_bias (an image
                     that runs from a copy of itself)
+  --no-smc          no check at each instruction for the program having stored over
+                    it (for an image known not to modify its own code: faster; words
+                    the analysis saw stored to keep the check)
   --range FROM-TO   only the code in [FROM, TO), as an image of its own: an overlay
                     analysed as part of the program it is loaded beside (an image
                     of both), the program's code translated separately. Repeatable:
@@ -106,6 +109,7 @@ let decode_line (i : Arm2.t) =
       "dp", Printf.sprintf "op=%s s=%b rd=%d rn=%d imm=%s" (string_of_dp_op op) s rd rn
         (match op2 with Imm (v, _) -> string_of_int v | Reg _ -> "-")
     | Mul { acc; _ } -> (if acc then "mla" else "mul"), ""
+    | Mull { signed; acc; _ } -> (if signed then "s" else "u") ^ (if acc then "mlal" else "mull"), ""
     | Swp _ -> "swp", ""
     | Mem { load; byte; pre; up; wb; rd; rn; off } ->
       (if load then "ldr" else "str"),
@@ -175,6 +179,7 @@ let parse_opts ~what rest =
     | "--header" :: n :: r -> gen_only (); o.gen <- { o.gen with header = n }; go r
     | "--covtag" :: c :: r -> gen_only (); o.gen <- { o.gen with covtag = c }; go r
     | "--pcbias" :: r -> gen_only (); o.gen <- { o.gen with pcbias = true }; go r
+    | "--no-smc" :: r -> gen_only (); o.gen <- { o.gen with no_smc = true }; go r
     | "--banner" :: b :: r -> gen_only (); o.gen <- { o.gen with banner = b }; go r
     | "--range" :: x :: r ->
       gen_only ();

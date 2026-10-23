@@ -964,7 +964,7 @@ let apply_exit t cs (e : exit_) =
 (* Does instruction i (when executed) change the flags? *)
 let sets_flags (i : Arm2.t) =
   match i.kind with
-  | Arm2.Dp { s; _ } | Arm2.Mul { s; _ } -> s
+  | Arm2.Dp { s; _ } | Arm2.Mul { s; _ } | Arm2.Mull { s; _ } -> s
   | Arm2.Swi _ -> true
   | Arm2.Cop { ck = Arm2.Mrc; _ } -> true
   | Arm2.Msr _ -> true
@@ -1740,10 +1740,10 @@ and analyse_function t f =
         (String.concat " " (List.map (fun (k, v) -> Printf.sprintf "%d:%s" k (string_of_v v))
                               (IM.bindings st.stack)))
         (String.concat " " (List.map (fun (k, v) -> Printf.sprintf "%x:%s" k (string_of_v v))
-                              (List.filter (fun (k, _) -> match st.regs.(13) with
+                              (List.filter (fun (k, _) -> Hashtbl.mem t.pc_slots k || match st.regs.(13) with
                                    | Consts s -> IS.exists (fun c -> abs (k - c) < 64) s | _ -> false)
                                   (IM.bindings st.amem))));
-    if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.psr_transfer i)
+    if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.later_arm i)
        && not ((Arm2.sbz_only i || Arm2.undefined_trap i) && Hashtbl.mem t.code (a - 4)
                && Arm2.runs_on (Image.decode img (a - 4))) then
       Hashtbl.replace t.problems a ("invalid: " ^ Arm2.to_string i)
@@ -1878,6 +1878,16 @@ and analyse_function t f =
                      note_candidates t (add_k st.regs.(r) (4 * e)) a
                        (Printf.sprintf "swi &%x r%d+%d entry" n r (4 * e))
                    done
+                 | Riscos.Fs_block o ->
+                   (match single st.regs.(0), single st.regs.(r), single st.regs.(o) with
+                    | Some 12, Some base, Some off when Image.inside img (base + off + 40) ->
+                      List.iter (fun e ->
+                          let w = Image.word img (base + off + e) in
+                          if w <> 0 then
+                            note_candidates t (const ((base + w) land m32)) a
+                              (Printf.sprintf "swi &%x filing system entry +%d" n e))
+                        [ 8; 12; 16; 20; 24; 28; 36; 40 ]
+                    | _ -> note_candidates t st.regs.(r) a (Printf.sprintf "swi &%x r%d data" n r))
                  | _ ->
                    note_candidates t st.regs.(r) a
                      (Printf.sprintf "swi &%x r%d %s" n r (match kind with Riscos.Code -> "code" | _ -> "data")))
@@ -1987,6 +1997,7 @@ and analyse_function t f =
             | x, y -> map2_consts ( * ) x y in
           let v = if acc then add_v v st.regs.(rn) else v in       (* mla: + rn *)
           goto a next (set_reg st rd v)
+        | Arm2.Mull { rdhi; rdlo; _ } -> goto a next (set_reg (set_reg st rdlo Top) rdhi Top)
         | Arm2.Swp { rd; byte; _ } -> goto a next (set_reg st rd (if byte then any_byte else Top))
         | Arm2.Mem { load; byte; pre; up; wb; rd; rn; off } ->
           let base = reg_val st a rn in
@@ -2014,15 +2025,26 @@ and analyse_function t f =
                be returned to from any of those restore sites, which go on
                (pop a return...) as this function with its stack. (The
                restore sites are also analysed where they are, with SP
-               unknown there.) *)
+               unknown there.) When the function restores it itself - a
+               restore site after the save and before the next save to the
+               variable - only those do: routines that share one variable
+               (DFI's demos: each saves SP on entry, uses SP as data and
+               restores it to return) don't return through each other's *)
             (match av, st.regs.(13) with
              | Consts w, Sym (Reg0 13, _) when features.longjmp && rd = 13 && not byte && IS.cardinal w = 1
                                              && Hashtbl.mem t.sp_restores (IS.choose w) ->
                let st' = { st with regs = Array.mapi (fun r v -> if r = 13 then v else Top) st.regs;
                                    fk = -1; cmp = None } in
+               let var = IS.choose w and sites = Hashtbl.find t.sp_restores (IS.choose w) in
+               let saves x = match (Image.decode img x).kind with
+                 | Arm2.Mem { load = false; byte = false; rd = 13; rn = 15; pre = true; up; off = Arm2.Off_imm n; _ } ->
+                   (x + 8 + if up then n else -n) land lnot 3 = var
+                 | _ -> false in
+               let rec own x r = x >= r || (not (saves x) && own (x + 4) r) in
+               let mine = List.filter (fun r -> r > a && own (a + 4) r) sites in
                List.iter (fun r ->
                    Hashtbl.replace t.code r ();
-                   propagate (r + 4) st') (Hashtbl.find t.sp_restores (IS.choose w))
+                   propagate (r + 4) st') (if mine <> [] then mine else sites)
              | _ -> ());
             let v = if rd = 15 then const (a + 12) else st.regs.(rd) in
             if rn <> 13 && rd <> 15 && not byte then note_candidates t v a "stored";

@@ -50,10 +50,15 @@ type options = {
                                separately; calls into it are dispatched), or the parts
                                of a program that are translated while the rest is not
                                (native code in their place). The image spans them all *)
+  no_smc : bool;            (* no check before each instruction that the program hasn't
+                               stored over it since (I_() rather than I()): for an image
+                               known not to modify its code, about a fifth faster. Words
+                               the analysis found stored to keep it *)
 }
 
 let default_options = { prefix = "F"; tabprefix = "recomp"; pcbias = false; files = 16; header = "gen";
-                        covtag = ""; leaders = All; banner = "superspider"; range = [] }
+                        covtag = ""; leaders = All; banner = "superspider"; range = [];
+                        no_smc = false }
 
 let of_s1 (t : S1.t) ~entries =
   let keys h = List.sort compare (Hashtbl.fold (fun k _ acc -> k :: acc) h []) in
@@ -445,6 +450,10 @@ let create o inp ~data ~base =
         if w land (1 lsl 24) <> 0 || Hashtbl.mem c.calls a then add (call_return_site c a w tgt)
       end;
       if Hashtbl.mem c.calls a then add (a + 4);
+      (* a coprocessor or undefined instruction leaves for the dispatcher
+         (undefined_insn: the FPEmulator carries out the FPA's), which goes
+         on at the next word *)
+      if w lsr 28 <> 15 && (t = 6 || (t = 7 && w land (1 lsl 24) = 0) || (t = 3 && w land 0x10 <> 0)) then add (a + 4);
       if t = 1 && (w lsr 16) land 15 = 15 && ((w lsr 21) land 15 = 2 || (w lsr 21) land 15 = 4) then begin
         let v = ror (w land 0xFF) (((w lsr 8) land 15) * 2) in          (* ADR: a code address taken *)
         add ((if (w lsr 21) land 15 = 4 then a + 8 + v else a + 8 - v) land m32)
@@ -537,6 +546,12 @@ let mul _c _a w =
   if w land (1 lsl 21) <> 0 then [ Printf.sprintf "MLA%s(%d, %d, %d, %d);" s rd rm rs rn ]
   else [ Printf.sprintf "MUL%s(%d, %d, %d);" s rd rm rs ]
 
+(* the long multiplies (ARMv3M: the StrongARM's) *)
+let mull _c _a w =
+  let hi = (w lsr 16) land 15 and lo = (w lsr 12) land 15 and rs = (w lsr 8) land 15 and rm = w land 15 in
+  let name = [| "UMULL"; "UMLAL"; "SMULL"; "SMLAL" |].((w lsr 21) land 3) in
+  [ Printf.sprintf "%s%s(%d, %d, %d, %d);" name (if w land (1 lsl 20) <> 0 then "S" else "") lo hi rm rs ]
+
 let dataproc c fn a w =
   let op = (w lsr 21) land 15 and s = (w lsr 20) land 1 in
   let rn = (w lsr 16) land 15 and rd = (w lsr 12) land 15 in
@@ -617,6 +632,7 @@ let ldmstm c fn a w =
 let body c fn a w =
   let t = (w lsr 25) land 7 in
   if t <= 1 && w land 0x0FC000F0 = 0x90 then mul c a w
+  else if t <= 1 && w land 0x0F8000F0 = 0x00800090 then mull c a w
   else if t <= 1 && w land 0x0FB00FF0 = 0x01000090 then [ Printf.sprintf "interp_exec(%s, %s);" (pc c a) (h w) ]  (* SWP *)
   else if t <= 1 then dataproc c fn a w
   else if t = 2 || t = 3 then
@@ -671,7 +687,7 @@ let emit_function c buf fn =
   List.iter (fun x ->
       if is_leader c x then line (Printf.sprintf "L_%x:" x);
       let w = word c x in
-      line (Printf.sprintf "    I(%s);" (h x));
+      line (Printf.sprintf "    %s(%s);" (if c.o.no_smc && not (Hashtbl.mem c.smc_words x) then "I_" else "I") (h x));
       c.insns <- c.insns + 1;
       List.iter (fun l -> line ("    " ^ l))
         (if Hashtbl.mem c.smc x then smc_switch c fn x w else translate c fn x w);

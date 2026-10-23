@@ -25,6 +25,8 @@ let test_text () =
   check_str "bl" 0xe378 0xEBFFE73A "bl &8068";
   check_str "swi" 0x8000 0xEF000006 "swi &6";
   check_str "mul" 0x8a2c 0xE0030390 "mul r3, r0, r3";
+  check_str "umull" 0x8000 0xE0810392 "umull r0, r1, r2, r3";
+  check_str "smlals" 0x8000 0xE0F10392 "smlals r0, r1, r2, r3";
   check_str "ldm decrement-before" 0x1a7f4 0xE93D0002 "ldmdb sp!, {r1}"
 
 let test_semantics () =
@@ -48,11 +50,19 @@ let test_semantics () =
 
 let test_undefined () =
   List.iter (fun (name, w) -> check_bool name (is_undefined (d w)))
-    [ ("ldrh (ARMv4)", 0xE1D000B0); ("mrs (ARMv3)", 0xE10F0000);
+    [ ("ldrh (ARMv4)", 0xE1D000B0);
       ("bx (ARMv4T)", 0xE12FFF1E); ("undefined space", 0xE6000010) ];
+  check_bool "mrs (ARMv3) decodes" (match (d 0xE10F0000).kind with Mrs _ -> true | _ -> false);
+  check_bool "mrs not guessed" (not (plausible (d 0xE10F0000)) && later_arm (d 0xE10F0000));
   check_bool "swp is ARM3" (match (d 0xE1000090).kind with Swp _ -> true | _ -> false);
+  check_bool "umull decodes" (not (is_undefined (d 0xE0810392)));
+  check_bool "umull not guessed" (not (plausible (d 0xE0810392)));
+  check_bool "umull code when reached" (later_arm (d 0xE0810392));
+  Alcotest.check ints "umull writes lo and hi" [ 0; 1 ] (defs (d 0xE0810392));
+  Alcotest.check ints "umlal reads lo and hi" [ 0; 1; 3; 2 ] (uses (d 0xE0A10392));
   check_bool "FPA cp1 plausible" (plausible (d 0xEE000110));
-  check_bool "cp15 implausible" (not (plausible (d 0xEE000F10)))
+  check_bool "cp5 implausible" (not (plausible (d 0xEE000510)));
+  check_bool "mcr p15 plausible (ARM3 probe)" (plausible (d 0xEE000F10))
 
 (* A tiny image at &8000:
      8000  bl   &8014          call

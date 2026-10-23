@@ -9,6 +9,11 @@
 
 type arg = Code | Data | Entries of int   (* a block of n consecutive entry points (each
                                             word an instruction the OS calls) *)
+         | Fs_block of int                (* OS_FSControl 12 (R0 = 12): this register (a
+                                             module's base) plus register n is a filing
+                                             system information block, whose entries
+                                             (+8..+28, +36, +40) are offsets from the
+                                             base to code (0: none) *)
 
 let table : (int * (int * arg) list) list = [
   (* OS (kernel) *)
@@ -53,6 +58,7 @@ let table : (int * (int * arg) list) list = [
   0x4C, [ (1, Code); (2, Data) ];             (* OS_ReleaseDeviceVector *)
   0x54, [ (0, Code); (1, Data) ];             (* OS_AddCallBack *)
   0x5F, [ (0, Code); (1, Data) ];             (* OS_RemoveCallBack *)
+  0x29, [ (1, Fs_block 2) ];                  (* OS_FSControl (12: add a filing system) *)
   (* Sound *)
   0x40140, [];                                (* Sound_Configure (handler blocks: unknown layout) *)
   0x40141, [];                                (* Sound_Enable *)
