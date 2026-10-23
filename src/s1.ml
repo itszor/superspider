@@ -1103,6 +1103,34 @@ let span_run img a c =
     else match run p with l when List.length l >= min_span_blocks -> l | _ -> first (p + 1) in
   if Image.inside img c && c > a then first 1 else []
 
+(* Forward into a run of identical blocks that starts at c (add pc,rN,rX,
+   lsl #k with rN = c and rX unknown: an unrolled loop entered part way
+   through, its blocks not a power of two in size - Tertis' sprite rows,
+   blocks of 9 instructions entered at c + 36n with rX = n*9 made by add
+   rX,rX,rX,lsl #3). Each block's size a multiple of 2^k; every block
+   start, and the code just after the run (none of them done). *)
+let block_run img c k =
+  let block p x = List.init p (fun j -> Image.word img (x + 4 * j)) in
+  let code_block p x =
+    List.for_all (fun j ->
+        let y = x + 4 * j in
+        Image.inside img y
+        && (let i = Image.decode img y in Arm2.plausible i && i.cond <> Arm2.NV && not (Arm2.writes_pc i)))
+      (List.init p Fun.id) in
+  let run p =
+    let size = 4 * p in
+    if size land ((1 lsl k) - 1) <> 0 || not (code_block p c) then []
+    else
+      let b = block p c in
+      let rec go x acc = if code_block p x && block p x = b then go (x + size) (x :: acc) else x :: acc in
+      let l = go c [] in
+      let fin = List.hd l in
+      if Image.inside img fin && Arm2.plausible (Image.decode img fin) then l else List.tl l in
+  let rec first p =
+    if p > max_span_words then []
+    else match run p with l when List.length l > min_span_blocks -> l | _ -> first (p + 1) in
+  if Image.inside img c then first 1 else []
+
 (* The slots of a table of branches at x (where add pc,pc,rX,lsl #2 goes
    with rX = 0): the unconditional b's from x on, or from x + 4 when x
    holds no instruction (a slot the index never selects). At least two of
@@ -1280,9 +1308,12 @@ and analyse_function t f =
       let sp = IS.choose sp in
       IM.fold (fun a v acc -> if a >= sp && a < sp + 256 then code_consts v acc else acc) st.amem IS.empty
     | _ -> IS.empty
+  (* (a return address: code there, not a pointer the routine saved with
+     its registers - Tertis' decompressor wrapper pushes r0-r12 and lr, r0
+     its buffer, then resumes the decompressor with ldmneia r1!,{pc}) *)
   and pushed_return st =
     match top_of_stack st with
-    | Consts s -> IS.for_all (fun c -> Image.inside img (c land addr_mask)) s
+    | Consts s -> IS.for_all (fun c -> code_target (c land addr_mask)) s
     | _ -> false
   and goto a target st =
     if in_slot t target then unknown_jump a st
@@ -1926,6 +1957,12 @@ and analyse_function t f =
                    with rX unknown, e.g. a Duff's device): assume rX >= 0 *)
                 Hashtbl.replace t.follow a ();
                 goto a (a + 8) st
+              | Arm2.ADD, rn, Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, k))
+                when rn <> 15 && (v = Top || unbounded v) && single st.regs.(rn) <> None
+                     && block_run img (Option.get (single st.regs.(rn)) land addr_mask) k <> [] ->
+                let bs = block_run img (Option.get (single st.regs.(rn)) land addr_mask) k in
+                jump a st (Consts (IS.of_list bs));
+                Hashtbl.replace t.tables a ("run of blocks from rN", List.length bs)
               | Arm2.SUB, rn, Arm2.Reg _ when rn <> 15 && v = Top && single st.regs.(rn) <> None ->
                 (* back into a run of identical blocks that ends at rN (add
                    lr,pc,#k ; sub pc,lr,r11,asr #3: a span fill entered part

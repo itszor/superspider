@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods and Phaethon. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon and Tertis. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -246,7 +246,16 @@ fervour/) lists what it needed. The patterns so far:
   still not as a guess
 - span fills entered backwards: add lr,pc,#k ; sub pc,lr,rX,<shift> into
   a run of identical blocks ending at lr (Darkwood's MCMain2; blocks of up
-  to 16 words: Desktop Tracker's mixer loops, 10)
+  to 16 words: Desktop Tracker's mixer loops, 10); and forwards, add
+  pc,rN,rX,lsl #k with rN a known address, into a run of identical blocks
+  starting at rN (Tertis' sprite rows: 9-word blocks, rX made by add
+  rX,rX,rX,lsl #3)
+- a resumable routine (a coroutine): Tertis' decompressor returns NE with
+  its resume address pushed on a stack of its own in R1, and its caller
+  resumes it with ldmneia r1!,{pc}. The caller's pushed registers are not
+  a return address for that jump (the hand-linked call assumption takes
+  the word on top of the stack only if it looks like code); the resume
+  addresses are address-taken entries, dispatched at run time
 - tables of branches after add pc,pc,rX,lsl #2 with rX unknown: every b
   in the run (its first slot may be no instruction when the index is never
   0: Desktop Tracker's mixers, on a mask of active channels built with
@@ -297,6 +306,10 @@ adapt them:
 - Simon the Sorcerer for a C program with the C library linked in
   (ANSILib), many discs merged into one tree, or a music module that
   drives the sound hardware itself (Desktop Tracker).
+- Tertis for a program a loader decompresses into place and enters part
+  way through (roger_program.entry), and modules the program unpacks into
+  its own memory and inserts where they are (OS_Module 10:
+  roger_module.in_memory, one translation each at its address).
 - Phaethon for a program that unpacks and decrypts itself in several
   layers at run time, with the images taken up part way through (game.c
   switches between interpreting and translated images at the addresses
@@ -355,6 +368,11 @@ to use it. Things each game needed:
   interpreter (copy protection that stores over the instruction after
   next), chains of vector claimants, *Load of an Absolute, "^" in names,
   GSTrans ending at a control character
+- Tertis: OS_Module 10 (modules inserted from memory), a program entered
+  part way through (roger_program.entry), RISC OS 2 and 3.1's zero page
+  words read directly (&164, the soft CAM map's first entry: the start of
+  screen memory; &10C0, the VDU drivers' ScreenStart; &10C, MetroGnome),
+  OS_BinaryToDecimal, OS_Byte 129's R1 = R2 on timeout (&FF) and Escape
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow
