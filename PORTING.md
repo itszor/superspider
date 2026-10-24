@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice and Small. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small and DinoSaw. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -310,6 +310,14 @@ fervour/) lists what it needed. The patterns so far:
   identical blocks (Small's scalers, rY = n*3 or n*5 made by add rY,rY,
   rY,lsl #1 or #2; the loop around comes back to the mov pc with rN
   reused, so rN is also taken from the add pc,#k before the add)
+- flags kept across a call: a function that returns through its entry LR
+  restoring the PSR (ldm ...,{...,pc}^ or movs pc,lr) leaves the flags as
+  they were at the bl, so bleq f ; blne g doesn't run g after f
+  (DinoSaw's TrackerModule passes a return address in r1 that g would
+  take after f had changed r1). Phaethon's inline-string decoder loop
+  (blne ; bne) is then followed more exactly, at a small cost: its return
+  past the string gets a second candidate a word on, five data words
+  translated as entries never used
 - a table of stubs at a known address: add pc,rN,rX,lsl #k with rN known,
   entries of 2^k bytes each ending in a transfer always taken (Small's
   object handlers: bl handler ; b join, 8 bytes each, up to the first
@@ -357,6 +365,11 @@ adapt them:
   control reaches; tools/unpack.c writes the images at the same points):
   roots, not --exec, for an image entered with a return address the
   analysis can't know.
+- DinoSaw for BASIC loaders by hand (Gyrinus II's, same author), an
+  absolute run before the game that returns to its caller (game.c calls it
+  with its own translation selected), and a module the game RMLoads on
+  demand that drives the sound system with its own channel handler
+  (TrackerModule).
 - Small for a BASIC game that *LOADs position-independent code into its
   DIMmed blocks and CALLs it through a table of offsets (each translated
   at its block's address in the BASIC runtime's heap; --exec past the
@@ -428,6 +441,9 @@ to use it. Things each game needed:
   to make its SWIs)
 - Small: *FX with its number straight after the name (*FX19, *FX112,1);
   *Load's address with a '&' (*LOAD <Small$Dir>.TI &1FEC000: the panel)
+- DinoSaw: Sound_InstallVoice without calling the voice's +24 Install
+  entry, which RISC OS never calls (its voice blocks have their name offset
+  there, and running it recursed)
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

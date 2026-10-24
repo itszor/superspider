@@ -937,7 +937,18 @@ let top_of_stack st =
     Option.value (IM.find_opt (IS.choose s land lnot 3) st.amem) ~default:Top
   | _ -> Top
 
-let apply_exit t cs (e : exit_) =
+(* Does exit e return through the entry LR restoring the PSR from it
+   (ldm ...,{...,pc}^ or movs pc,lr)? After a bl, LR's PSR bits are the
+   flags at the call, so the caller's flags are as they were: bleq f ;
+   blne g, with f returning so, doesn't go on into g (TrackerModule). *)
+let restores_flags t (e : exit_) =
+  e.pc = Sym (Reg0 14, 0)
+  && (match (Image.decode t.img e.at).kind with
+      | Arm2.Block { load = true; psr = true; regs; _ } -> regs land 0x8000 <> 0
+      | Arm2.Dp { op = Arm2.MOV; s = true; rd = 15; op2 = Arm2.Reg (Arm2.Shift_imm (14, Arm2.LSL, 0)); _ } -> true
+      | _ -> false)
+
+let apply_exit ?(fk = -1) t cs (e : exit_) =
   let regs = Array.init 16 (fun r -> subst t cs e.st.regs.(r)) in
   if regs.(13) = Top then regs.(13) <- cs.regs.(13);    (* stack balance (counted by caller) *)
   (* Caller's stack and absolute memory survive; the callee's absolute
@@ -968,7 +979,7 @@ let apply_exit t cs (e : exit_) =
       match subst t cs (Sym (b, k)) with
       | Sym (b', k') when b' <> Reg0 13 -> PM.add (b', k') (subst t cs v) m
       | _ -> m) e.st.fields cs.fields in
-  { regs; stack; amem; fields; fk = -1; cmp = None }    (* callee may change the flags *)
+  { regs; stack; amem; fields; fk; cmp = None }    (* callee may change the flags *)
 
 (* Does instruction i (when executed) change the flags? *)
 let sets_flags (i : Arm2.t) =
@@ -1347,7 +1358,10 @@ and analyse_function t f =
         if Sys.getenv_opt "SS_DEBUG_ADDR" = Some (Printf.sprintf "%x" a) then
           Printf.eprintf "summary return at &%x from &%x: exit %s -> %s (r10=%s)\n" a target
             (string_of_v e.pc) (string_of_v ret) (string_of_v st.regs.(10));
-        let st' = apply_exit t st e in
+        let fk = match (Image.decode img a).kind with
+          | Arm2.Branch { link = true; _ } when restores_flags t e -> st.fk
+          | _ -> -1 in
+        let st' = apply_exit ~fk t st e in
         match ret with
         | Consts s ->
           let s = IS.map (fun c -> c land addr_mask) s in
