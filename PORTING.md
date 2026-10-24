@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis and Lemmings 2. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice and Small. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -107,6 +107,12 @@ loads it to. Run `superspider` with no arguments for the full option list.
     the original disc. Its `tools/unpack.py` does the same from the disc
     image (a recipe's `"raw": true` keeps it as extracted/<disc>.img) and
     the translation starts after the checks (`--exec`).
+
+  - Encrypted in layers, in place: Fire & Ice's Fire is an AIF image whose
+    header leads to a chain of loops (XOR, NOT, ADD), each decrypting the
+    next and the rest of the program. Its tools/unpack (Phaethon's
+    unpack.c) runs it interpreted to its start-up and saves the image;
+    game.c puts that in place when the loader jumps into the encrypted one.
 
   - Protection that reads the disc itself: Darkwood calls FileCore's SWI
     handler directly to read a track of odd sector sizes and CRC errors.
@@ -291,6 +297,23 @@ fervour/) lists what it needed. The patterns so far:
   branch an address-taken entry; the program's jump into it with lr its
   caller's (add pc,r6,r7,lsl #2) is a tail call that returns with
   `--with tailcall` (opt-in: it changed Gods' and K2's analyses)
+- a stack set up from OS_GetEnv's RAM limit (mov sp,r1 at the start-up):
+  in an entry point, OS_GetEnv's R1 is taken as the entry SP, so what the
+  program pushes is tracked from the start (Fire & Ice calls with
+  stmdb sp!,{pc} ; b and returns with ldmia sp!,{pc}: with SP unknown
+  after mov sp,r1 none of its returns resolved)
+- a jump table running on into a literal pool: an entry whose word at the
+  target is below &10000 is no target (the next table's base, as already
+  for ranges: Fire & Ice's &BFE0)
+- an unrolled loop entered in two steps: add rN,pc,#k ; ... add rX,rN,
+  rY,lsl #k ; ... mov pc,rX, as add pc,rN,rY,lsl #k into a run of
+  identical blocks (Small's scalers, rY = n*3 or n*5 made by add rY,rY,
+  rY,lsl #1 or #2; the loop around comes back to the mov pc with rN
+  reused, so rN is also taken from the add pc,#k before the add)
+- a table of stubs at a known address: add pc,rN,rX,lsl #k with rN known,
+  entries of 2^k bytes each ending in a transfer always taken (Small's
+  object handlers: bl handler ; b join, 8 bytes each, up to the first
+  entry that isn't one)
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to
@@ -334,6 +357,14 @@ adapt them:
   control reaches; tools/unpack.c writes the images at the same points):
   roots, not --exec, for an image entered with a return address the
   analysis can't know.
+- Small for a BASIC game that *LOADs position-independent code into its
+  DIMmed blocks and CALLs it through a table of offsets (each translated
+  at its block's address in the BASIC runtime's heap; --exec past the
+  table), with overlays loaded into the same block in turn.
+- Fire & Ice for a program decrypted in place by its own layers, swapped
+  for the decrypted image when the loader jumps into it (call_addr), a
+  part of it that stays encrypted until it runs (roger_config.interpreted),
+  and a disc check whose failure path game.c turns into its success.
 
 Fill in from what !Run did:
 
@@ -391,6 +422,12 @@ to use it. Things each game needed:
   words read directly (&164, the soft CAM map's first entry: the start of
   screen memory; &10C0, the VDU drivers' ScreenStart; &10C, MetroGnome),
   OS_BinaryToDecimal, OS_Byte 129's R1 = R2 on timeout (&FF) and Escape
+- Fire & Ice: OS_ReadPalette; OS_File 12-15 with an empty path, or a full
+  name (<Var>., ":", "$"), use the name as it is; the kernel's SWI handler
+  at &1F033C0, where RISC OS 2 and 3.1 have it (Gordian Lock jumps there
+  to make its SWIs)
+- Small: *FX with its number straight after the name (*FX19, *FX112,1);
+  *Load's address with a '&' (*LOAD <Small$Dir>.TI &1FEC000: the panel)
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

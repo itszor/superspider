@@ -998,6 +998,19 @@ let refine ?(index = false) st c holds =
   | Some (r, imm) ->
     let c = if holds then c else cond_of_index (cond_index c lxor 1) in
     let cur = st.regs.(r) in
+    (* NE when that is the only value known: the register holds one written
+       at run time (ldr r1,[r0],#4 ; teq r1,#0 ; beq ; mov pc,r1 through a
+       table of handlers filled in later, zeros in the image: Robocod's exit
+       routine). A set of values isn't narrowed: that made a data word
+       James Pond 2 stores look like a code address *)
+    if c = Arm2.NE then
+      match cur with
+      | Consts s when IS.equal s (IS.singleton (if imm < 0 then 0 else imm)) ->
+        let regs = Array.copy st.regs in
+        regs.(r) <- Top;
+        { st with regs }
+      | _ -> st
+    else
     let nonneg = index || match cur with Range (_, h, _) -> h < 0x80000000 | _ -> false in
     let bound = if imm < 0 then (if c = Arm2.EQ then Some (0, 0) else None) else match c with
       | Arm2.CC when imm > 0 -> Some (0, imm - 1)
@@ -1140,6 +1153,52 @@ let block_run img c k =
     else match run p with l when List.length l > min_span_blocks -> l | _ -> first (p + 1) in
   if Image.inside img c then first 1 else []
 
+(* The add that made rX for the jump at a (mov pc,rX), in the code just
+   before it: add rX,rN,rY,lsl #k, rN not written between it and the jump,
+   as (rN, k, c): c rN's value when the code before that sets it from the
+   PC (add rN,pc,#n), if it does. An unrolled loop entered part way through
+   in two steps (Small's scalers: add r12,pc,#&14 ; add r2,r2,r2,lsl #1 ;
+   add r2,r12,r2,lsl #2 ; ... ; mov pc,r2, into blocks of 3 instructions,
+   or 5; the loop around it comes back to the jump after the adds, with r2
+   as it was and r12 reused). *)
+let add_before img a rx =
+  let rec pc_rel x n r =
+    if n = 0 || not (Image.inside img x) then None
+    else
+      let i = Image.decode img x in
+      match i.kind with
+      | Arm2.Dp { op = (Arm2.ADD | Arm2.SUB) as op; rd; rn = 15; op2 = Arm2.Imm (v, _); _ }
+        when rd = r && Arm2.always i ->
+        Some ((if op = Arm2.ADD then x + 8 + v else x + 8 - v) land addr_mask)
+      | _ when List.mem r (Arm2.defs i) || Arm2.writes_pc i -> None
+      | _ -> pc_rel (x - 4) (n - 1) r in
+  let rec back x n written =
+    if n = 0 || not (Image.inside img x) then None
+    else
+      let i = Image.decode img x in
+      if not (Arm2.plausible i) || Arm2.writes_pc i then None
+      else match i.kind with
+        | Arm2.Dp { op = Arm2.ADD; rd; rn; op2 = Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, k)); _ }
+          when rd = rx && rn <> 15 && rn <> rx && Arm2.always i ->
+          if List.mem rn written then None else Some (rn, k, pc_rel (x - 4) 8 rn)
+        | _ when List.mem rx (Arm2.defs i) -> None
+        | _ -> back (x - 4) (n - 1) (Arm2.defs i @ written) in
+  back (a - 4) 8 []
+
+(* A table of stubs at c (add pc,rN,rX,lsl #k with rN = c): entries of
+   size bytes, each code ending in a transfer it always takes - Small's
+   object handlers, bl handler ; b join, 8 bytes each. Every entry start,
+   up to the first that isn't one (at most 256: the index a byte); [] if
+   fewer than two. *)
+let stub_table img c size =
+  let insn_ok x = Image.inside img x && (let i = Image.decode img x in Arm2.plausible i && i.cond <> Arm2.NV) in
+  let stub b =
+    let rec ok x = x < b + size && insn_ok x
+                   && (let i = Image.decode img x in (Arm2.always i && Arm2.writes_pc i) || ok (x + 4)) in
+    ok b in
+  let rec go b n acc = if n < 256 && stub b then go (b + size) (n + 1) (b :: acc) else acc in
+  match go c 0 [] with _ :: _ :: _ as l -> l | _ -> []
+
 (* The slots of a table of branches at x (where add pc,pc,rX,lsl #2 goes
    with rX = 0): the unconditional b's from x on, or from x + 4 when x
    holds no instruction (a slot the index never selects). At least two of
@@ -1184,6 +1243,9 @@ let note_entry_consts t g (st : state) =
 
 (* Analyse g now if it never has been (depth-first, so that a caller sees
    its callees' summaries in the same pass); re-analyse on demand otherwise. *)
+(* the program's start-up: the first entry point (BASE or --exec) *)
+let start_entry = ref (-1)
+
 let rec ensure_analysed t g =
   if not (Hashtbl.mem t.analysed g) && not (Hashtbl.mem t.in_progress g) then update t g
 
@@ -1335,6 +1397,14 @@ and analyse_function t f =
         Hashtbl.replace t.promoted target ();
         apply_summary a st target
       | _ -> propagate target st
+  (* the run of blocks a mov pc,rX at a goes into (add_before) *)
+  and via_add a rx st =
+    match add_before img a rx with
+    | Some (rn, k, c) ->
+      (match (match single st.regs.(rn) with Some v -> Some v | None -> c) with
+       | Some c -> block_run img (c land addr_mask) k
+       | None -> [])
+    | None -> []
   and jump a st v =
     (* a PC write at a with value v *)
     (match st.regs.(14), v with
@@ -1450,8 +1520,13 @@ and analyse_function t f =
              | None -> if Hashtbl.mem t.vars e then [] else [ Image.word img e ] in
            let valid = List.concat_map (fun add -> List.filter_map (fun w ->
                let target = map_addr t ((w + add) land addr_mask) in
+               (* (not a word below &10000, as for a range: the next
+                  table's base in the literal pool after the table - Fire &
+                  Ice's &BFE0, then &BD48 - is the address of andeq
+                  r11,r0,r8,lsl lr, its first entry) *)
                if Image.inside img target && Arm2.plausible (Image.decode img target)
                   && (Image.decode img target).cond <> Arm2.NV && not (Hashtbl.mem t.data target)
+                  && Image.word img target >= 0x10000
                then Some target else None) entry_vals) adds in
            if valid <> [] then begin
              Hashtbl.replace t.data e "jump table";
@@ -1813,6 +1888,12 @@ and analyse_function t f =
         (* comparison tracking: cmp rN,#imm (or a constant register) starts
            it; anything else that sets the flags or redefines rN ends it *)
         let st = match i.kind with
+          | Arm2.Dp { op = Arm2.TEQ; rn; op2; _ } when rn <> 15 ->
+            (* teq rN,#0: Z says rN = 0, as a result's does (its C and N
+               aren't a comparison's) *)
+            (match op2_val st i op2 with
+             | Consts c when IS.equal c (IS.singleton 0) -> { st with cmp = Some (rn, -1) }
+             | _ -> { st with cmp = None })
           | Arm2.Dp { op = Arm2.CMP; rn; op2; _ } when rn <> 15 ->
             (match op2_val st i op2 with
              | Consts c when IS.cardinal c = 1 -> { st with cmp = Some (rn, IS.choose c) }
@@ -1920,7 +2001,16 @@ and analyse_function t f =
              veneer: mov r3,lr ; swi ... ; mov pc,r3) *)
           let results = List.filter (fun r -> match st.regs.(r) with Sym (Reg0 14, 0) -> false | _ -> true)
               [ 0; 1; 2; 3 ] in
-          goto a next (clobber st results)
+          let st = clobber st results in
+          (* OS_GetEnv in the program's start-up: R1, the RAM limit, is
+             where it puts its stack (mov sp,r1), so it is taken as the
+             entry SP and what is pushed there is tracked (Fire & Ice calls
+             with stmdb sp!,{pc} ; b and returns with ldmia sp!,{pc}, from
+             a stack set up so). Not in other entry points: an exit handler
+             resetting the stack to call others (Robocod's) is better left
+             with SP unknown *)
+          let st = if n land lnot 0x20000 = 0x10 && f = !start_entry then set_reg st 1 (Sym (Reg0 13, 0)) else st in
+          goto a next st
         | Arm2.Dp { op; rd; rn; op2; s = setf; _ } ->
           if Arm2.is_test op then goto a next st
           else
@@ -1992,6 +2082,20 @@ and analyse_function t f =
                 let bs = block_run img (Option.get (single st.regs.(rn)) land addr_mask) k in
                 jump a st (Consts (IS.of_list bs));
                 Hashtbl.replace t.tables a ("run of blocks from rN", List.length bs)
+              | Arm2.ADD, rn, Arm2.Reg (Arm2.Shift_imm (_, Arm2.LSL, k))
+                when rn <> 15 && k >= 2 && (v = Top || unbounded v) && single st.regs.(rn) <> None
+                     && stub_table img (Option.get (single st.regs.(rn)) land addr_mask) (1 lsl k) <> [] ->
+                let bs = stub_table img (Option.get (single st.regs.(rn)) land addr_mask) (1 lsl k) in
+                jump a st (Consts (IS.of_list bs));
+                Hashtbl.remove t.unresolved a;
+                Hashtbl.replace t.tables a ("table of stubs from rN", List.length bs)
+              | Arm2.MOV, _, Arm2.Reg (Arm2.Shift_imm (rx, Arm2.LSL, 0))
+                when (v = Top || unbounded v) && via_add a rx st <> [] ->
+                (* mov pc,rX after add rX,rN,rY,lsl #k: as add pc,rN,rY,lsl #k *)
+                let bs = via_add a rx st in
+                jump a st (Consts (IS.of_list bs));
+                Hashtbl.remove t.unresolved a;
+                Hashtbl.replace t.tables a ("run of blocks from rN, through rX", List.length bs)
               | Arm2.SUB, rn, Arm2.Reg _ when rn <> 15 && v = Top && single st.regs.(rn) <> None ->
                 (* back into a run of identical blocks that ends at rN (add
                    lr,pc,#k ; sub pc,lr,r11,asr #3: a span fill entered part
@@ -2134,6 +2238,7 @@ and analyse_function t f =
   !summary
 
 let run t entries =
+  (match entries with e :: _ -> start_entry := e | [] -> ());
   List.iter (fun e -> Hashtbl.replace t.roots e ()) entries;
   List.iter (add_func t) entries;
   let rounds = ref 0 in

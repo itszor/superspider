@@ -16,8 +16,9 @@ are the runtime's, kept across CHAIN as BASIC keeps them.
 Semantics kept from BASIC:
 - PROC/FN parameters and LOCAL variables are dynamically scoped globals,
   saved on an undo stack on entry and restored on exit (and on errors).
-- FOR/NEXT and REPEAT/UNTIL are labels and gotos, matched in program order,
-  so a NEXT in each branch of a block IF works as it does in BASIC.
+- FOR/NEXT, REPEAT/UNTIL and WHILE/ENDWHILE are labels and gotos, matched
+  in program order, so a NEXT in each branch of a block IF works as it does
+  in BASIC.
 - ON ERROR [LOCAL] handlers are setjmp points; an error longjmps to the
   current handler, which runs the rest of its line and carries on.
 - Every line sets bas_line (ERL, and for debugging).
@@ -546,9 +547,25 @@ class Trans:
     def closed_later(self):
         """the innermost open loop is closed somewhere after here (an UNTIL or
         NEXT): one that never is (Saloon Cars Deluxe's cheat menu, its UNTIL
-        a REM) ends with its routine, not around the DEF after it"""
-        end = 'UNTIL' if self.loops[-1][0] == 'REPEAT' else 'NEXT'
-        return any(t.kind == 'kw' and t.val == end for t in self.t[self.p:])
+        a REM) ends with its routine, not around the DEF after it; nor does
+        one closed only after the DEF of a routine that's called (Small's
+        PROCZ`: a REPEAT with no UNTIL, left on BASIC's stack until its
+        ENDPROC; the program's other UNTILs come after DEF PROCN_, which a
+        DEF inside a loop couldn't be)"""
+        end = {'REPEAT': 'UNTIL', 'WHILE': 'ENDWHILE'}.get(self.loops[-1][0], 'NEXT')
+        for k in range(self.p, len(self.t)):
+            t = self.t[k]
+            if t.kind == 'kw' and t.val == end:
+                return True
+            if t.kind == 'nl' and k + 3 < len(self.t) and self.t[k + 1].kind == 'kw' \
+                    and self.t[k + 1].val == 'DEF' and self.called(self.t[k + 2].val, self.t[k + 3].val):
+                return False
+        return False
+
+    def called(self, kind, name):
+        """PROCname or FNname appears other than in its DEF"""
+        return any(self.t[k].kind == 'kw' and self.t[k].val == kind and self.t[k + 1].val == name
+                   and not (k and self.t[k - 1].val == 'DEF') for k in range(len(self.t) - 1))
 
     def skip_def(self):
         """A DEF line inside a loop of the routine before it (DefKeys' FNkey:
@@ -559,10 +576,8 @@ class Trans:
         self.owner[n] = self.cur_routine
         self.expect('kw', 'DEF')
         kind, name = self.next().val, self.next().val
-        for k in range(len(self.t) - 1):
-            if self.t[k].kind == 'kw' and self.t[k].val == kind and self.t[k + 1].val == name and \
-                    not (k and self.t[k - 1].val == 'DEF'):
-                raise Fail('line %s: %s%s, defined inside a loop, is called' % (n, kind, name))
+        if self.called(kind, name):
+            raise Fail('line %s: %s%s, defined inside a loop, is called' % (n, kind, name))
         while not self.at('nl'):
             self.next()
         return ['L(%d);' % n]
@@ -746,17 +761,21 @@ class Trans:
         return ['%s = %s; lim_%d = %s; stp_%d = %s;' % (cname(var), self.conv(a, at, t), n, self.conv(b, bt, t),
                                                        n, self.conv(s, st, t)), 'for_%d:;' % n]
 
-    def s_NEXT(self):
-        if self.at('id'):
-            self.next()
-            while self.accept('op', ','):
-                self.next()
+    def s_NEXT(self):                            # NEXT [v] [, [v]]...: a loop each
+        out = [self.next_one()]
+        self.accept('id')
+        while self.accept('op', ','):
+            self.accept('id')
+            out.append(self.next_one())
+        return out
+
+    def next_one(self):
         if not self.loops:
             raise Fail('line %s: NEXT without FOR' % self.peek().line)
         kind, n, v = self.loops.pop()
         if kind != 'FOR':
             raise Fail('NEXT without FOR at %s' % self.peek().line)
-        return ['%s += stp_%d; if (stp_%d >= 0 ? %s <= lim_%d : %s >= lim_%d) goto for_%d;' % (v, n, n, v, n, v, n, n)]
+        return '%s += stp_%d; if (stp_%d >= 0 ? %s <= lim_%d : %s >= lim_%d) goto for_%d;' % (v, n, n, v, n, v, n, n)
 
     def s_REPEAT(self):
         n = self.newlabel()
@@ -771,6 +790,18 @@ class Trans:
         if kind != 'REPEAT':
             raise Fail('UNTIL without REPEAT at %s' % self.peek().line)
         return ['if (!(%s)) goto rep_%d;' % (c, n)]
+
+    def s_WHILE(self):                           # tested first: false skips to its ENDWHILE
+        c, t = self.expr()
+        n = self.newlabel()
+        self.loops.append(('WHILE', n, None))
+        return ['wh_%d: if (!(%s)) goto wend_%d;' % (n, c, n)]
+
+    def s_ENDWHILE(self):
+        if not self.loops or self.loops[-1][0] != 'WHILE':
+            raise Fail('line %s: ENDWHILE without WHILE' % self.peek().line)
+        kind, n, _ = self.loops.pop()
+        return ['goto wh_%d; wend_%d:;' % (n, n)]
 
     def s_ENDPROC(self):
         return ['goto out;']
@@ -837,7 +868,16 @@ class Trans:
 
     def s_CALL(self):
         c, t = self.expr()
-        return ['call(%s);' % self.toint(c, t)]
+        # CALL addr, var, ...: BASIC passes a parameter block (R9, R10 its
+        # count) of the variables' addresses; the program's variables aren't
+        # in emulated memory here, so they're evaluated for their effects
+        # only and the call made as without them (R0-R7 from A%-H% as ever:
+        # Small's CODE takes A% in R0 and reads no block)
+        out = []
+        while self.accept('op', ','):
+            lv, _ = self.lvalue()
+            out.append('(void)%s;' % lv)
+        return out + ['call(%s);' % self.toint(c, t)]
 
     def s_OSCLI(self):
         c, t = self.expr()
@@ -847,7 +887,7 @@ class Trans:
         out = []
         while True:
             name = self.expect('id').val
-            if self.at('op', '('):
+            if self.at('op', '(') and not self.peek().gap:     # (DIM x (n): a block of n+1 bytes)
                 dims = [self.toint(c, t) for c, t in self.args()]
                 self.arrays.add(name)
                 out.append('dim_%s(&%s, %s);' % (vtype(name), cname(name, True),
