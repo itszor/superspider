@@ -34,13 +34,14 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import hfe   # noqa: E402
 import jfd   # noqa: E402
+import apd   # noqa: E402
 
 
 def sectors_of(path):
-    """{(track, side, R): data} for a .jfd or .hfe image's readable sectors"""
+    """{(track, side, R): data} for a .jfd, .hfe or .apd image's readable sectors"""
     out = {}
-    if hfe.is_hfe(path):
-        for t, s, secs in hfe.tracks(path):
+    if hfe.is_hfe(path) or apd.is_apd(path):
+        for t, s, secs in (hfe if hfe.is_hfe(path) else apd).tracks(path):
             for (c, h, r), (n, data, good) in secs.items():
                 if good:
                     out[(t, s, r, 128 << n)] = data

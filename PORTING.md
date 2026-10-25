@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw and Diggers. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers and Magic Pockets. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -24,6 +24,8 @@ into a game.
     hfe.py IMAGE.hfe OUT.img         an HxC floppy image (MFM) -> its sectors, as a flat
                                      .adf-style image; also each track's sectors with their
                                      IDs and CRCs (for protection tracks)
+    apd.py IMAGE.apd OUT.img         an Arculator .apd (gzipped MFM cell streams) -> its
+                                     sectors, as hfe.py does an .hfe; lists the odd ones
     arcfs.py ARCHIVE OUT             ArcFS archives (filetype &DDC): stored, packed, crunched
     detok.py FILE                    BBC BASIC V program -> text (inline assembler too)
     arm2.py                          a small ARM2 emulator in Python, for running a
@@ -382,6 +384,10 @@ adapt them:
   DIMmed blocks and CALLs it through a table of offsets (each translated
   at its block's address in the BASIC runtime's heap; --exec past the
   table), with overlays loaded into the same block in turn.
+- Magic Pockets for a resident loader that unpacks one of two packed
+  programs over the same address and enters it, each going back to the
+  loader for the other (overlays with roger_program.unpacked), and a disc
+  check decrypted at run time, read from an .apd.
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),
@@ -464,6 +470,11 @@ to use it. Things each game needed:
   - and the host mouse mapped onto the mode's own size in OS units
   (pixels times eig factors: its 320x200 mode is 1280x800), not always
   1280x1024
+- Magic Pockets: roger_program.unpacked (a program loaded packed over its
+  own image and unpacked there: its code compared with the unpacked image,
+  not with the packed bytes the unpacking finds); a dirty word that's back
+  as translated but isn't an entry interpreted; .apd floppies; a sector ID
+  inside another sector's data found (as the 1772 finds it; hfe.py too)
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

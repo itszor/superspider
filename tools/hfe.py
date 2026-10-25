@@ -78,8 +78,8 @@ def sectors(raw):
                 good = crc16(b'\xa1\xa1\xa1' + rec[:1 + size]) == struct.unpack('>H', rec[-2:])[0]
                 if good or (c, h, r) not in out:
                     out[(c, h, r)] = (n, rec[1:1 + size], good)
-                p += 16 * len(rec)
-            pending = None
+            p += 16                     # (not past the data: a sector's ID may be inside
+            pending = None              # another's data, as on Magic Pockets' track 79)
         else:
             p += 16
         pos = bits.find(syncs, p)

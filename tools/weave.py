@@ -26,7 +26,8 @@ default ~/games/*. INPUT is a .zip (its members are examined) or a disc
 image or archive: .adf (ADFS D/E/F, via adf_extract.py), .hfe (an HxC
 floppy image, decoded to sectors by hfe.py, then as an .adf), .jfd
 (JASPP's ADFFS image, gzipped or not, decoded to sectors by jfd.py, then
-as an .adf; from either, a ZFiler-protected disc's hidden files too, beside
+as an .adf), .apd (Arculator's protected disc image, decoded to sectors by
+apd.py, then as an .adf; from either, a ZFiler-protected disc's hidden files too, beside
 their empty placeholders: zfiler.py), an ArcFS
 archive (RISC OS filetype &DDC, recognised by its "Archive\0" header, via
 arcfs.py) or a Spark archive (&DDC too, ARC's &1A header with the RISC OS
@@ -52,9 +53,9 @@ recipe.json:
                           its own name, title, images, key_files and
                           game_dirs], raw (true: the image itself is
                           copied to extracted/<its name>.img too, for a
-                          game that reads sectors no file holds; an .hfe
-                          or .jfd input is copied as it is, to
-                          extracted/<its name>.hfe or .jfd, keeping what a
+                          game that reads sectors no file holds; an .hfe,
+                          .jfd or .apd input is copied as it is, to
+                          extracted/<its name>.hfe, .jfd or .apd (gunzipped), keeping what a
                           flat image can't: sector sizes and CRC errors,
                           e.g. a protection track)
   (the disc or alternative matched is extracted to extracted/<its name>,
@@ -80,6 +81,7 @@ sys.path.insert(0, TOOLS)
 from spark import is_spark   # noqa: E402
 import hfe                   # noqa: E402
 import jfd                   # noqa: E402
+import apd                   # noqa: E402
 import zfiler                # noqa: E402
 from implode import read_member   # noqa: E402
 
@@ -189,7 +191,7 @@ def images_in(inputs, tmp):
             with zipfile.ZipFile(p) as z:
                 n0 = len(out)
                 for n in z.namelist():
-                    if n.lower().endswith(('.adf', '.hfe', '.jfd')) or (not n.endswith('/') and is_archive(member_head(z, n))):
+                    if n.lower().endswith(('.adf', '.hfe', '.jfd', '.apd')) or (not n.endswith('/') and is_archive(member_head(z, n))):
                         d = os.path.join(tmp, 'z%d' % len(out))
                         os.makedirs(d)
                         out.append((n, z.extract(n, d), ch))
@@ -241,10 +243,11 @@ class Disc:
             self.sha, self.tree, self.clean, self._files = tree_sha(path), path, True, {}
             self.raw_ext = None
             return
-        self.raw_ext = '.hfe' if hfe.is_hfe(path) else '.jfd' if jfd.is_jfd(path) else '.img'
+        self.raw_ext = ('.hfe' if hfe.is_hfe(path) else '.jfd' if jfd.is_jfd(path) else
+                        '.apd' if apd.is_apd(path) else '.img')
         img = path
         if self.raw_ext != '.img':                  # its sectors, as a flat image
-            data = (hfe.decode if self.raw_ext == '.hfe' else jfd.decode)(path)[0]
+            data = {'.hfe': hfe.decode, '.jfd': jfd.decode, '.apd': apd.decode}[self.raw_ext](path)[0]
             self.sha = hashlib.sha256(data).hexdigest()
             img = os.path.join(tmp, 'h' + self.sha[:16] + '.adf')
             with open(img, 'wb') as f:
@@ -359,7 +362,7 @@ def extract(rdir, inputs):
         for disc in r['discs']:
             for form in forms(disc):
                 shutil.rmtree(os.path.join(rdir, 'extracted', form['name']), ignore_errors=True)
-                for ext in ('.img', '.hfe', '.jfd'):
+                for ext in ('.img', '.hfe', '.jfd', '.apd'):
                     if os.path.isfile(os.path.join(rdir, 'extracted', form['name'] + ext)):
                         os.remove(os.path.join(rdir, 'extracted', form['name'] + ext))
             full = False
@@ -373,7 +376,12 @@ def extract(rdir, inputs):
             print('%s: %s%s' % (disc['name'], d.name, '' if form is disc else ' (as %s)' % form['name']))
             shutil.copytree(d.tree, os.path.join(rdir, 'extracted', form['name']))
             if form.get('raw') and not os.path.isdir(d.path):
-                shutil.copy(d.path, os.path.join(rdir, 'extracted', form['name'] + d.raw_ext))
+                raw = os.path.join(rdir, 'extracted', form['name'] + d.raw_ext)
+                if d.raw_ext == '.apd':             # gunzipped: libroger reads the image inside
+                    with open(raw, 'wb') as f:
+                        f.write(apd.load(d.path))
+                else:
+                    shutil.copy(d.path, raw)
             got[disc['name']] = form
         game = os.path.join(rdir, 'game')
         shutil.rmtree(game, ignore_errors=True)
