@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers and Magic Pockets. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets and Guile. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -134,6 +134,14 @@ loads it to. Run `superspider` with no arguments for the full option list.
     every file loaded while it's there with it. Their tools/images.py read the key from the .jfd
     (`"raw": true`; `jfd.tracks()` has the odd sectors) and decrypt the
     files; game.c stands in for the loader and the module's commands.
+
+  - Files compressed by a filing system: Guile's disc is Computer
+    Concepts' CFS (filetype &D96, LZW), its !Run *NewCfs and paths
+    CFS#<dir>. Its tools/unpack runs CfsModule's own decoder under
+    libroger's interpreter, with the decoder's input and output routines
+    (pointers in its workspace) as call_addr hooks over the files in
+    memory, and writes each file with the load and exec addresses its
+    header keeps.
 
   The image you translate is the one that actually runs, at the address it
   runs from.
@@ -388,6 +396,9 @@ adapt them:
   programs over the same address and enters it, each going back to the
   loader for the other (overlays with roger_program.unpacked), and a disc
   check decrypted at run time, read from an .apd.
+- Guile for a game kept in a compressing filing system (CFS), unpacked by
+  the filing system's own decoder, and a headless scenario's click for a
+  game that reads the buttons with OS_Mouse (a swi hook).
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),
@@ -475,6 +486,8 @@ to use it. Things each game needed:
   not with the packed bytes the unpacking finds); a dirty word that's back
   as translated but isn't an entry interpreted; .apd floppies; a sector ID
   inside another sector's data found (as the 1772 finds it; hfe.py too)
+- Guile: the interval timer (OS_Word 3 and 4; event 5 when it passes zero):
+  its delays wait for it to move on
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow
