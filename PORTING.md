@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small and DinoSaw. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw and Diggers. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -322,6 +322,14 @@ fervour/) lists what it needed. The patterns so far:
   entries of 2^k bytes each ending in a transfer always taken (Small's
   object handlers: bl handler ; b join, 8 bytes each, up to the first
   entry that isn't one)
+- a call one word early, onto a word no assembler writes that the ARM2 runs
+  and that falls through: BASIC's assembler, its two passes disagreeing
+  about a table's length (Diggers' bl &12704, the table's last word
+  &0000FFFF; the code after the table calls &12708). The ARM2 takes bits 7
+  and 4 set, bits 27-22 clear, as a multiply whatever bits 6-5 are
+  (muleq r0,pc,pc here; Arculator and RPCEmu decode only 1001 and would
+  jump away), in Arm2, gen and libroger's interpreter; S1 takes such a word
+  at a called function's entry as code (slipped_call)
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to
@@ -444,6 +452,18 @@ to use it. Things each game needed:
 - DinoSaw: Sound_InstallVoice without calling the voice's +24 Install
   entry, which RISC OS never calls (its voice blocks have their name offset
   there, and running it recursed)
+- Diggers: the vsync event called with R3 = IOC, as the kernel's VSync
+  interrupt handler raises it (the intro's handler clears the interrupt
+  through it; with the program's R3 it wrote MEMC's control register and
+  stopped the sound DMA). Its headless runs need --full-os: it reads
+  DisplayStart (OS_ReadVduVariables 149), which headless runs otherwise
+  give as the write bank's; and the pointer image in the kernel's
+  workspace (&1F038F8, &1F039F8), which its FastPtr module writes directly
+  to animate the pointer (the address is inferred from FastPtr's code, not
+  checked against RISC OS)
+  - and the host mouse mapped onto the mode's own size in OS units
+  (pixels times eig factors: its 320x200 mode is 1280x800), not always
+  1280x1024
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

@@ -1784,6 +1784,7 @@ and analyse_function t f =
     if in_slot t target then unknown_jump a st       (* a call into a slot: whatever it holds then *)
     else begin
     add_func t target;
+    Hashtbl.replace (Hashtbl.find t.callers target) f ();   (* before its analysis: slipped_call *)
     ensure_analysed t target;
     if features.inline && Hashtbl.mem t.fn_unresolved target && target <> f && not (Hashtbl.mem t.in_progress target)
        && Option.value (Hashtbl.find_opt t.fn_size target) ~default:max_int <= max_inline
@@ -1851,9 +1852,20 @@ and analyse_function t f =
                               (List.filter (fun (k, _) -> Hashtbl.mem t.pc_slots k || match st.regs.(13) with
                                    | Consts s -> IS.exists (fun c -> abs (k - c) < 64) s | _ -> false)
                                   (IM.bindings st.amem))));
+    (* a word no assembler writes, but which an ARM2 runs as an instruction
+       that falls through, at the entry of a function code calls: the call
+       lands on it by an assembler's slip. BASIC's assembler, its two passes
+       disagreeing about a table's length: Diggers' code before the table
+       calls &12704 - the table's last word, &0000FFFF, muleq r0,pc,pc on an
+       ARM2, and run so with Z set - and the code after it &12708, the
+       routine. *)
+    let slipped_call () =
+      a = f && not (Arm2.is_undefined i) && not (Arm2.writes_pc i)
+      && (match Hashtbl.find_opt t.callers f with Some c -> Hashtbl.length c > 0 | None -> false) in
     if i.cond <> Arm2.NV && not (Arm2.plausible i) && not (Arm2.later_arm i)
        && not ((Arm2.sbz_only i || Arm2.undefined_trap i) && Hashtbl.mem t.code (a - 4)
-               && Arm2.runs_on (Image.decode img (a - 4))) then
+               && Arm2.runs_on (Image.decode img (a - 4)))
+       && not (slipped_call ()) then
       Hashtbl.replace t.problems a ("invalid: " ^ Arm2.to_string i)
     else begin
       Hashtbl.replace t.code a ();

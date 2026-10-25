@@ -101,7 +101,9 @@ let decode_shifted w =
 
 let decode_kind addr w =
   match field w 25 3 with
-  | 0 | 1 when field w 4 4 = 0b1001 && field w 22 6 = 0 ->
+  (* a multiply: the ARM2 takes bits 7 and 4 set as one, whatever bits 6-5
+     are (later ARMs decode only 1001 there) - &0000FFFF is muleq r0,pc,pc *)
+  | 0 | 1 when bit w 7 && bit w 4 && field w 22 6 = 0 ->
     Mul { acc = bit w 21; s = bit w 20; rd = field w 16 4; rn = field w 12 4;
           rs = field w 8 4; rm = field w 0 4 }
   | 0 when field w 4 4 = 0b1001 && field w 23 5 = 0b00010 && field w 20 2 = 0
@@ -192,6 +194,7 @@ let implausible_reason i =
   | Block { regs = 0; _ } -> Some "empty register list"
   | Block { rn = 15; wb = true; _ } -> Some "writeback to r15"
   | Mem { rn = 15; wb; pre; _ } when wb || not pre -> Some "writeback to r15"
+  | Mul _ when field i.word 5 2 <> 0 -> Some "multiply with bits 6-5 set"
   | Mul { rd; rm; _ } when rd = rm || rd = 15 -> Some "mul rd = rm or r15"
   | _ -> None
 

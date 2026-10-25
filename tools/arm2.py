@@ -117,7 +117,7 @@ class ARM:
         op = (i >> 25) & 7
         nextpc = (pc + 4) & 0x3FFFFFC
         self.r[15] = pc
-        if op in (0, 1) and (i & 0x0FC000F0) == 0x00000090:  # MUL/MLA
+        if op in (0, 1) and (i & 0x0FC00090) == 0x00000090:  # MUL/MLA (bits 6-5 any, as the ARM2)
             rd, rn, rs, rm = i >> 16 & 15, i >> 12 & 15, i >> 8 & 15, i & 15
             v = (self.r[rm] * self.r[rs]) & M32
             if i & (1 << 21): v = (v + self.r[rn]) & M32

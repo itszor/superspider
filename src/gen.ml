@@ -631,7 +631,7 @@ let ldmstm c fn a w =
 
 let body c fn a w =
   let t = (w lsr 25) land 7 in
-  if t <= 1 && w land 0x0FC000F0 = 0x90 then mul c a w
+  if t <= 1 && w land 0x0FC00090 = 0x90 then mul c a w            (* bits 6-5 any: Arm2.decode_kind *)
   else if t <= 1 && w land 0x0F8000F0 = 0x00800090 then mull c a w
   else if t <= 1 && w land 0x0FB00FF0 = 0x01000090 then [ Printf.sprintf "interp_exec(%s, %s);" (pc c a) (h w) ]  (* SWP *)
   else if t <= 1 then dataproc c fn a w
