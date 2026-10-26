@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets and Guile. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile and the Magnetoids demo. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -340,6 +340,19 @@ fervour/) lists what it needed. The patterns so far:
   (muleq r0,pc,pc here; Arculator and RPCEmu decode only 1001 and would
   jump away), in Arm2, gen and libroger's interpreter; S1 takes such a word
   at a called function's entry as code (slipped_call)
+- an OS handler block a SWI is given whose words point to code
+  (Sound_Configure's R3, the Level 1 handler: fill code at +0, overrun
+  fix-up at +4): the values the program stores there are entries (the
+  Magnetoids demo's Digital Symphony player; Gods' fix-up too)
+- a workspace pointer re-established PC-relatively (add r12,pc,#k) by a
+  routine that saved LR through it on entry (str lr,[r12,#&10] ... ldr lr,
+  [r12,#&10] ; movs pc,lr: the Magnetoids demo): with --global-r12, stores
+  through r12 to its constant workspace are tracked as PC-relative ones
+  are, so the reload finds the return address
+- an instruction picked from a table by an unknown index and stored over a
+  routine's last instruction (ldr r0,[r0,r10,lsl #2] ; str r0,[lr]: the
+  Magnetoids demo's mixer, by its number of channels): the word may fall
+  through (or return) if any of the table's instructions does
 - slots: a copy loop into the image from a source the analysis doesn't
   know (Starch copies the current level's header, branches and all, into
   one place). Calls into a slot are dispatched at run time and assumed to
@@ -399,6 +412,12 @@ adapt them:
 - Guile for a game kept in a compressing filing system (CFS), unpacked by
   the filing system's own decoder, and a headless scenario's click for a
   game that reads the buttons with OS_Mouse (a swi hook).
+- The Magnetoids demo for a loader that loads the game straight after
+  itself and jumps there (roger_program at a base other than &8000), a
+  position-independent program that keeps its workspace in r12
+  (--global-r12), its own sound DMA fill code (Sound_Configure), and a
+  headless scenario for a game that reads the mouse buttons with INKEY
+  (scenario keys 10-12, not clicks).
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),

@@ -784,6 +784,10 @@ let initial_target t w =
    that value substituted with its own state (see apply_summary). *)
 let max_sym_values = 8
 
+(* the entries of a table of instructions considered for a store of one of
+   them (see note_store) *)
+let max_insn_table = 16
+
 let note_store t ~f site av v ~byte =
   match av with
   | Consts s when IS.cardinal s = 1 && not byte && features.memory
@@ -806,11 +810,24 @@ let note_store t ~f site av v ~byte =
     let w = IS.choose s land lnot 3 in
     if Image.inside t.img w then begin
       Hashtbl.replace t.code_writes w (site :: Option.value (Hashtbl.find_opt t.code_writes w) ~default:[]);
+      let note_insns c =
+        if IS.exists is_return_word c then Hashtbl.replace t.ret_stores w ();
+        if IS.exists (fun x -> let i = Arm2.decode w x in Arm2.plausible i && not (Arm2.writes_pc i)) c then
+          Hashtbl.replace t.fall_stores w () in
       (match v with
-       | Consts c when not byte ->
-         if IS.exists is_return_word c then Hashtbl.replace t.ret_stores w ();
-         if IS.exists (fun x -> let i = Arm2.decode w x in Arm2.plausible i && not (Arm2.writes_pc i)) c then
-           Hashtbl.replace t.fall_stores w ()
+       | Consts c when not byte -> note_insns c
+       | Tab { tbase; more = []; stride; tadd = 0; limit; tfield = None } when not byte && stride > 0 ->
+         (* an entry of a table of instructions, picked by an index the
+            analysis doesn't know (the Magnetoids demo's sound code: ldr
+            r0,[r0,r10,lsl #2] ; str r0,[lr], a return or a store over a
+            routine's end, by the number of channels): each of them, the
+            table's run of instructions from its base *)
+         let n = match limit with Some n -> min n max_insn_table | None -> max_insn_table in
+         let rec entries k acc =
+           let e = (tbase + k * stride) land lnot 3 in
+           if k >= n || not (Image.inside t.img e) || not (Arm2.plausible (Image.decode t.img e)) then acc
+           else entries (k + 1) (IS.add (Image.word t.img e) acc) in
+         note_insns (entries 0 IS.empty)
        | _ -> ());
       let v = if byte then Top else v in
       Hashtbl.replace t.var_stores w
@@ -888,16 +905,20 @@ let load_word t st av ~byte =
    SP), i.e. a stack whose pointer is a known constant, and (with the
    memory mechanism) for words addressed PC-relative: a routine that keeps
    its return address in a word of its own (str lr,[pc,#k] ... ldr lr,
-   [pc,#j] ; mov pc,lr: Chocks Away) returns through it. Not for the
-   program's other global variables; but a tracked word stored to again
-   through another register is updated (one constant address) or forgotten
-   (several). *)
+   [pc,#j] ; mov pc,lr: Chocks Away) returns through it; and with
+   --global-r12, for words addressed through the workspace pointer, which
+   is found PC-relative as well (the Magnetoids demo: str lr,[r12,#&10] ...
+   add r12,pc,#k ; ldr lr,[r12,#&10] ; movs pc,lr, the word also an OS_Word
+   block elsewhere). Not for the program's other global variables; but a
+   tracked word stored to again through another register is updated (one
+   constant address) or forgotten (several). *)
 let store t st ~base_reg av v =
   match av with
   | Sym (Reg0 13, k) -> { st with stack = IM.add k v st.stack }
   | Sym (b, k) -> { st with fields = PM.add (b, k) v st.fields }
   | Consts s when IS.cardinal s = 1
                   && (base_reg = 13 || (base_reg = 15 && features.memory)
+                      || (base_reg = 12 && features.global_r12)
                       || IM.mem (IS.choose s land lnot 3) st.amem) ->
     if base_reg = 15 then Hashtbl.replace t.pc_slots (IS.choose s land lnot 3) ();
     { st with amem = IM.add (IS.choose s land lnot 3) v st.amem }
@@ -2014,6 +2035,25 @@ and analyse_function t f =
                               (Printf.sprintf "swi &%x filing system entry +%d" n e))
                         [ 8; 12; 16; 20; 24; 28; 36; 40 ]
                     | _ -> note_candidates t st.regs.(r) a (Printf.sprintf "swi &%x r%d data" n r))
+                 | Riscos.Code_ptrs offs ->
+                   (* each pointer's values: what the program stores there
+                      (the variable's known values: certain, as a voice
+                      generator's entries are, and possibly a single
+                      instruction - an overrun fix-up that only returns), or
+                      the image's word if nothing does *)
+                   (match single st.regs.(r) with
+                    | Some b when Image.inside img b ->
+                      List.iter (fun o ->
+                          let w = b + o in
+                          if Image.inside img w then
+                            match Hashtbl.find_opt t.var_known w with
+                            | Some v -> note_candidates t v a (Printf.sprintf "swi &%x r%d+%d handler entry" n r o)
+                            | None when not (Hashtbl.mem t.vars w) ->
+                              note_candidates t (const (Image.word img w)) a
+                                (Printf.sprintf "swi &%x r%d+%d handler code" n r o)
+                            | None -> ())
+                        offs
+                    | _ -> ())
                  | _ ->
                    note_candidates t st.regs.(r) a
                      (Printf.sprintf "swi &%x r%d %s" n r (match kind with Riscos.Code -> "code" | _ -> "data")))

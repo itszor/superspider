@@ -14,6 +14,9 @@ type arg = Code | Data | Entries of int   (* a block of n consecutive entry poin
                                              system information block, whose entries
                                              (+8..+28, +36, +40) are offsets from the
                                              base to code (0: none) *)
+         | Code_ptrs of int list          (* a block holding, at these offsets, addresses
+                                             of code the OS calls (set in the image, or
+                                             stored there at run time) *)
 
 let table : (int * (int * arg) list) list = [
   (* OS (kernel) *)
@@ -60,7 +63,9 @@ let table : (int * (int * arg) list) list = [
   0x5F, [ (0, Code); (1, Data) ];             (* OS_RemoveCallBack *)
   0x29, [ (1, Fs_block 2) ];                  (* OS_FSControl (12: add a filing system) *)
   (* Sound *)
-  0x40140, [];                                (* Sound_Configure (handler blocks: unknown layout) *)
+  0x40140, [ (3, Code_ptrs [ 0; 4 ]) ];       (* Sound_Configure: R3 the Level 1 handler block -
+                                                 fill code, overrun fix-up code (then the
+                                                 log and scale tables); 0 no change *)
   0x40141, [];                                (* Sound_Enable *)
   0x40142, [];                                (* Sound_Stereo *)
   0x40143, [];                                (* Sound_Speaker *)
