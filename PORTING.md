@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile, the Magnetoids demo and Lotus Turbo Challenge 2. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile, the Magnetoids demo, Lotus Turbo Challenge 2 and Big Bang. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -424,6 +424,10 @@ adapt them:
   (tools/unpack.c saves the two images it leaves: a decrypted logo program
   that unpacks the game), and a game that takes the hardware IRQ vector at
   &18 itself.
+- Big Bang (~/games/big-bang) for the simplest case: one
+  position-independent absolute (--global-r12) and a mode module, with
+  !Run's other commands (*Load of a font file, *ScreenLoad, *Tuning) run
+  from game.c's init hook. No roots needed.
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),
@@ -520,6 +524,12 @@ to use it. Things each game needed:
   vector at &18 a program may take (the OS's word there a branch to
   OS_IRQ_ENTRY, which the program reads to pass interrupts on to; IOC's
   mask A starting with vsync and timer 0 on)
+- Big Bang: a module mode shown in the shape its VIDC list's display
+  extent gives it (HDSR-HDER at the control register's pixel rate, VDSR-VDER
+  of 256 lines, on a 312-line frame), not its eig factors': its mode 112 is
+  mode 15's 640 pixels on 128 lines, a letterbox, with eig factors 2 and 2.
+  FervourMode's, Darkwood's (525 lines: still eig) and Diggers' modes keep
+  the shape they had
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow
