@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile and the Magnetoids demo. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile, the Magnetoids demo and Lotus Turbo Challenge 2. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -418,6 +418,12 @@ adapt them:
   (--global-r12), its own sound DMA fill code (Sound_Configure), and a
   headless scenario for a game that reads the mouse buttons with INKEY
   (scenario keys 10-12, not clicks).
+- Lotus Turbo Challenge 2 (~/games/lotus-turbo-challenge-2) for a
+  protection that decrypts itself into the RMA in layers and checks a disc
+  sector with a bad CRC, run interpreted with the user's .jfd as the floppy
+  (tools/unpack.c saves the two images it leaves: a decrypted logo program
+  that unpacks the game), and a game that takes the hardware IRQ vector at
+  &18 itself.
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),
@@ -507,6 +513,13 @@ to use it. Things each game needed:
   inside another sector's data found (as the 1772 finds it; hfe.py too)
 - Guile: the interval timer (OS_Word 3 and 4; event 5 when it passes zero):
   its delays wait for it to move on
+- Lotus Turbo Challenge 2: OS_CRC as the kernel computes it (the reflected
+  CRC-16, &A001: it was the cassette filing system's &1021), the OS_Byte
+  variables 166-255 kept and read back ((old AND R2) EOR R1), JASPP .jfd
+  floppies (weave.py keeps a raw .jfd gunzipped), and the hardware IRQ
+  vector at &18 a program may take (the OS's word there a branch to
+  OS_IRQ_ENTRY, which the program reads to pass interrupts on to; IOC's
+  mask A starting with vsync and timer 0 on)
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

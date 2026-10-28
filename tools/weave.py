@@ -55,7 +55,8 @@ recipe.json:
                           copied to extracted/<its name>.img too, for a
                           game that reads sectors no file holds; an .hfe,
                           .jfd or .apd input is copied as it is, to
-                          extracted/<its name>.hfe, .jfd or .apd (gunzipped), keeping what a
+                          extracted/<its name>.hfe, .jfd or .apd (the last two
+                          gunzipped), keeping what a
                           flat image can't: sector sizes and CRC errors,
                           e.g. a protection track)
   (the disc or alternative matched is extracted to extracted/<its name>,
@@ -377,9 +378,9 @@ def extract(rdir, inputs):
             shutil.copytree(d.tree, os.path.join(rdir, 'extracted', form['name']))
             if form.get('raw') and not os.path.isdir(d.path):
                 raw = os.path.join(rdir, 'extracted', form['name'] + d.raw_ext)
-                if d.raw_ext == '.apd':             # gunzipped: libroger reads the image inside
+                if d.raw_ext in ('.apd', '.jfd'):   # gunzipped: libroger reads the image inside
                     with open(raw, 'wb') as f:
-                        f.write(apd.load(d.path))
+                        f.write((apd if d.raw_ext == '.apd' else jfd).load(d.path))
                 else:
                     shutil.copy(d.path, raw)
             got[disc['name']] = form
