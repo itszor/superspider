@@ -656,6 +656,18 @@ class Trans:
         if op.kind != 'op' or op.val not in ('=', '+=', '-=', '*=', '/='):
             raise Fail('line %s: expected =, got %r' % (op.line, op))
         c, ct = self.expr()
+        if lv.startswith('ALL(') and self.at('op', ','):
+            # a()=v0,v1,...: the elements in order (row by row), the rest
+            # as they were
+            a, out, k = lv[4:-1], [], 0
+            while True:
+                out.append('if (!%s.p || %d >= (%s.d1 + 1) * (%s.d2 < 0 ? 1 : %s.d2 + 1)) '
+                           'bas_error(15, "Subscript out of range");' % (a, k, a, a, a))
+                out.append('%s.p[%d] = %s;' % (a, k, self.conv(c, ct, t)))
+                if not self.accept('op', ','):
+                    return out
+                c, ct = self.expr()
+                k += 1
         if lv.startswith('ALL('):
             return ['all_%s(&%s, %s);' % (t, lv[4:-1], self.conv(c, ct, t))]
         if lv.startswith('STRAT('):
@@ -861,6 +873,9 @@ class Trans:
             k += 1
             if not self.accept('op', ','):
                 return out + ['}']
+
+    def s_RUN(self):                             # (bas_run's: the program afresh)
+        return ['bas_rerun();']
 
     def s_CHAIN(self):                           # (bas_run's: the program the name is)
         c, t = self.expr()
@@ -1184,12 +1199,57 @@ class Trans:
         return ['bas_ptr_set(%s, %s);' % (self.toint(h, ht), self.toint(c, t))]
 
     def s_INPUT(self):
+        if not self.at('op', '#'):
+            return self.kbd_input()
         self.expect('op', '#')
         c, t = self.unary()
         out = []
         while self.accept('op', ','):
             lv, lt = self.lvalue()
             out.append('%s = bas_input_%s(%s);' % (lv, lt, self.toint(c, t)))
+        return out
+
+    def kbd_input(self):
+        """INPUT from the keyboard: prompt items (strings, ' TAB( SPC, with ,
+        or ; between) before each variable; a variable with a prompt reads a
+        fresh line, with "?" after it unless the prompt ends in a string or
+        ';' (and with "?" alone for the first variable with none); one
+        without takes the line's next field."""
+        out, first = [], True
+        while not self.stmt_end():
+            prompt, qmark, any_ = [], True, False
+            while True:
+                if self.at('str'):
+                    prompt.append('print_s(s_(%s));' % cstr(self.next().val))
+                    qmark, any_ = False, True
+                elif self.accept('op', ','):
+                    qmark = True
+                elif self.accept('op', ';'):
+                    qmark = False
+                elif self.accept('op', "'"):
+                    prompt.append('vdu(13, 10, -1);')
+                    any_ = True
+                elif self.accept('kw', 'TAB('):
+                    a = [self.expr()]
+                    while self.accept('op', ','):
+                        a.append(self.expr())
+                    self.expect('op', ')')
+                    prompt.append('print_tab(%s);' % ', '.join(self.toint(c, t) for c, t in a) if len(a) == 2
+                                  else 'print_tab(%s, -1);' % self.toint(*a[0]))
+                    any_ = True
+                elif self.accept('kw', 'SPC'):
+                    c, t = self.unary()
+                    prompt.append('print_s(string_n(%s, s_(" ")));' % self.toint(c, t))
+                    any_ = True
+                else:
+                    break
+            if self.stmt_end():
+                return out + prompt
+            lv, lt = self.lvalue()
+            if any_ or first:
+                out += prompt + ['bas_kbd_start(%d);' % (1 if qmark else 0)]
+            first = False
+            out.append('%s = bas_kbd_%s();' % (lv, lt))
         return out
 
     def s_ERROR(self):

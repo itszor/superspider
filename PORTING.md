@@ -3,7 +3,7 @@ Porting a RISC OS game: from disc image to native binary
 
 How the recompilations so far were made: Galactic Dan, Lemmings, Twin
 World, Gyrinus II, Pushy II and Fervour (~/games/<name>), then Elite,
-Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile, the Magnetoids demo, Lotus Turbo Challenge 2 and Big Bang. Each is a static
+Pac-Mania, Stunt Racer 2000, Chocks Away, Zool, Warlocks, Starch, Darkwood, Saloon Cars, Chuck Rock, Enter the Realm, Ego: Repton 4, Simon the Sorcerer, James Pond, Gods, Phaethon, Tertis, Lemmings 2, Fire & Ice, Small, DinoSaw, Diggers, Magic Pockets, Guile, the Magnetoids demo, Lotus Turbo Challenge 2, Big Bang and AFG. Each is a static
 recompilation of the game's ARM2 code to C, linked with libroger
 (~/stuff/libroger), which emulates the Archimedes / Risc PC and the parts
 of RISC OS the game uses. In this file $SS means ~/stuff/superspider (the
@@ -428,6 +428,13 @@ adapt them:
   position-independent absolute (--global-r12) and a mode module, with
   !Run's other commands (*Load of a font file, *ScreenLoad, *Tuning) run
   from game.c's init hook. No roots needed.
+- AFG (~/games/recompiles/afg) for a BASIC menu (bas2c) and an absolute
+  that *Run each other in turn: game.c's bas_cli hook starts the program
+  when the menu *Runs it, its swi hook the menu again when the program's
+  OS_CLI names it (bas_run). Its source survives (~/stuff/afg), so its
+  analysis was checked against the assembler listing: no data taken as
+  code, only dead code and a voice generator's Gate On blocks missed (add
+  pc,pc,r7,lsl #3 into 2-word blocks that differ: roots).
 - Fire & Ice for a program decrypted in place by its own layers, swapped
   for the decrypted image when the loader jumps into it (call_addr), a
   part of it that stays encrypted until it runs (roger_config.interpreted),
@@ -530,6 +537,12 @@ to use it. Things each game needed:
   mode 15's 640 pixels on 128 lines, a letterbox, with eig factors 2 and 2.
   FervourMode's, Darkwood's (525 lines: still eig) and Diggers' modes keep
   the shape they had
+- AFG: modes 48 and 49 (RISC OS 3.5's 320x480), UtilityModule 3.50 on a
+  Risc PC (vidc20: *RMEnsure UtilityModule 3.50 is how a program asks for
+  RISC OS 3.5), the 2- and 4-colour modes' default palettes (black and
+  white; black, red, yellow, white), OS_Byte 138/153 into the keyboard
+  buffer. The BASIC runtime and bas2c: keyboard INPUT, RUN, a()=v0,v1,...,
+  and GET raising Escape (error 17)
 - Stib: the FPEmulator (FPA instructions: Acorn C's floating point, for
   its full recompilation), the vprintf family's va_list (an array in
   Acorn C), Wimp_BaseOfSprites and Wimp_CommandWindow

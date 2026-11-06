@@ -188,7 +188,7 @@ uint32_t swi_number(const char *name)
 }
 /* blocks the runtime DIMs for itself when first needed (dropped with the
  * heap when a program CHAINs another) */
-static uint32_t scratch_buf[10], osword_blk, time_out, call_stack;
+static uint32_t scratch_buf[10], osword_blk, time_out, call_stack, kbd_buf;
 uint32_t roger_scratch_n(int k, const char *s)
 {
     uint32_t *buf = scratch_buf;
@@ -274,7 +274,13 @@ int inkey(int n)
     return R[2] == 0 ? (int)R[1] : -1;
 }
 S inkey_s(int n) { int c = inkey(n); return c < 0 ? s_("") : chr(c); }
-int get(void) { roger_swi(0x04); return R[0]; }
+/* GET: OS_ReadC; Escape (C set) is BASIC's error 17, acknowledged */
+int get(void)
+{
+    roger_swi(0x04);
+    if (CF) { R[0] = 126; roger_swi(0x06); bas_error(17, "Escape"); }
+    return R[0];
+}
 
 /* TIME: BASIC's own clock, kept from the OS's monotonic time */
 static int32_t time_base;
@@ -363,6 +369,38 @@ S bas_input_s(int32_t h)
     return r;
 }
 
+/* INPUT from the keyboard: a line read with OS_ReadLine (echoed, edited
+ * as the OS does; Escape is BASIC's error 17), whose fields - separated by
+ * commas, leading spaces skipped - the variables take in turn. A variable
+ * left without one asks for another line, with "?". */
+static int kbd_pos = -1;                         /* the next field's offset; -1: no line */
+static void kbd_read(int qmark)
+{
+    if (!kbd_buf) kbd_buf = dim(256);
+    if (qmark) vdu('?', -1);
+    R[0] = kbd_buf; R[1] = 255; R[2] = 32; R[3] = 255;
+    roger_swi(0x0E);
+    if (CF) { R[0] = 126; roger_swi(0x06); bas_error(17, "Escape"); }
+    PB(kbd_buf + R[1]) = 0;
+    kbd_pos = 0;
+}
+void bas_kbd_start(int qmark) { kbd_read(qmark); }
+static S kbd_field(void)
+{
+    S r;
+    int n = 0;
+    if (kbd_pos < 0) kbd_read(1);
+    uint32_t p = kbd_buf + (uint32_t)kbd_pos;
+    while (PB(p) == ' ') p++;
+    while (PB(p) && PB(p) != ',' && n < 255) r.s[n++] = (char)PB(p++);
+    r.s[n] = 0;
+    kbd_pos = PB(p) == ',' ? (int)(p + 1 - kbd_buf) : -1;
+    return r;
+}
+S bas_kbd_s(void) { return kbd_field(); }
+double bas_kbd_r(void) { return val(kbd_field()); }
+int32_t bas_kbd_i(void) { return (int32_t)val(kbd_field()); }
+
 void quit(void) { roger_finish("QUIT"); }
 
 /* --- the assembler: what depends on the operands' values. Errors only
@@ -450,6 +488,15 @@ void bas_chain(S name)
     longjmp(chain_jb, 1);
 }
 
+/* RUN: the program afresh, as CHAIN starts one (bas_run's; a program
+ * bas_main runs can't) */
+void bas_rerun(void)
+{
+    if (!bas_current) bas_error(0, "RUN: not under bas_run");
+    roger_log("basic_run", "s", bas_current->name, (int)strlen(bas_current->name));
+    longjmp(chain_jb, 1);
+}
+
 void bas_run(const struct bas_program *const *progs, const struct bas_program *first)
 {
     programs = progs;
@@ -463,7 +510,7 @@ void bas_run(const struct bas_program *const *progs, const struct bas_program *f
     bas_lomem = ((uint32_t)bas_page + bas_current->size + 3) & ~3u;
     heap_start = bas_lomem;
     memset(scratch_buf, 0, sizeof scratch_buf);
-    osword_blk = time_out = call_stack = 0;
+    osword_blk = time_out = call_stack = kbd_buf = 0;
     bas_line = 0;
     bas_current->clear();
     bas_current->main();

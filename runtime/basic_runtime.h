@@ -176,6 +176,12 @@ void bas_print_s(int32_t h, S v);
 int32_t bas_input_i(int32_t h);
 double bas_input_r(int32_t h);
 S bas_input_s(int32_t h);
+/* INPUT from the keyboard: bas_kbd_start reads a line (after the prompt,
+ * with "?" if qmark), then each variable takes its next field */
+void bas_kbd_start(int qmark);
+int32_t bas_kbd_i(void);
+double bas_kbd_r(void);
+S bas_kbd_s(void);
 
 void quit(void) __attribute__((noreturn));
 void bas_main(void);                       /* the program (basic.c) */
@@ -195,6 +201,7 @@ struct bas_program {
 void bas_run(const struct bas_program *const *programs, const struct bas_program *first)
     __attribute__((noreturn));
 void bas_chain(S name) __attribute__((noreturn));
+void bas_rerun(void) __attribute__((noreturn));   /* RUN */
 extern const struct bas_program *bas_current;
 /* the game's hook: the program a CHAIN names (NULL: look it up as above) */
 extern const struct bas_program *(*bas_chain_hook)(const char *name);
