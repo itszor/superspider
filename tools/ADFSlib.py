@@ -1030,7 +1030,12 @@ class ADFSdisc(Utilities):
         # Seek to the end of the disc image.
         adf.seek(0, 2)
 
-        if record["disc size"] == adf.tell():
+        # A protected disc's record may give fewer bytes than the disc has,
+        # leaving its last tracks (the protection's) out of the filing
+        # system: Magnetoids' gives &C5800 of 800K (tracks 155-157 hold a
+        # hidden sector, a good one and an unformatted track). Within the
+        # image's last few tracks is taken as matching too.
+        if adf.tell() - 8 * 10240 <= record["disc size"] <= adf.tell():
             # The record (if is exists) does not provide a consistent value
             # for the length of the image file.
             checklist["Length field matches image length"] = 1
